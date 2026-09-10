@@ -2,236 +2,155 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-const DEFAULT_RULES = {
-  equity: 14000,
-  riskPerTradePct: 0.75,
-  maxPortfolioRiskPct: 2,
-  dailyLossLimitPct: 2.25,
-  maxOpenPositions: 4,
-  maxCorrelatedPositions: 3,
-  maxGivebackPct: 40,
-};
+const DEFAULT_RULES={equity:14000,riskPct:.75,maxPortfolioRiskPct:2,dailyLossPct:2.25,maxOpen:4};
+const EMPTY_PLAN={exchange:'Binance',symbol:'',side:'Long',setup:'',entry:'',stop:'',target:''};
+const EMPTY_CLOSE={id:'',exit:'',reason:'Take Profit',followedPlan:true,note:''};
 
-const emptyTrade = {
-  symbol: '',
-  side: 'Long',
-  setup: '',
-  entry: '',
-  stop: '',
-  target: '',
-  currentPortfolioPnl: '',
-  sameDirectionCount: 0,
-  correlation: 'Low',
-  mentalState: 'Calm',
-  confidence: 3,
-};
+export default function Home(){
+  const [tab,setTab]=useState('Today');
+  const [rules,setRules]=useState(DEFAULT_RULES);
+  const [plan,setPlan]=useState(EMPTY_PLAN);
+  const [positions,setPositions]=useState([]);
+  const [closed,setClosed]=useState([]);
+  const [closeForm,setCloseForm]=useState(EMPTY_CLOSE);
+  const [day,setDay]=useState({peak:0,current:0});
+  const [loaded,setLoaded]=useState(false);
 
-export default function Home() {
-  const [rules, setRules] = useState(DEFAULT_RULES);
-  const [trade, setTrade] = useState(emptyTrade);
-  const [positions, setPositions] = useState([]);
-  const [day, setDay] = useState({ peakPnl: 0, currentPnl: 0, realizedPnl: 0 });
-  const [execution, setExecution] = useState({ entry: true, risk: true, portfolio: true, management: true, exit: true });
-  const [logs, setLogs] = useState([]);
+  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem('nos_cockpit_v2')||'{}');if(x.rules)setRules(x.rules);if(x.positions)setPositions(x.positions);if(x.closed)setClosed(x.closed);if(x.day)setDay(x.day)}catch{}setLoaded(true)},[]);
+  useEffect(()=>{if(loaded)localStorage.setItem('nos_cockpit_v2',JSON.stringify({rules,positions,closed,day}))},[loaded,rules,positions,closed,day]);
 
-  useEffect(() => {
-    const raw = localStorage.getItem('nos_trading_os');
-    if (!raw) return;
-    try {
-      const saved = JSON.parse(raw);
-      if (saved.rules) setRules(saved.rules);
-      if (saved.positions) setPositions(saved.positions);
-      if (saved.day) setDay(saved.day);
-      if (saved.logs) setLogs(saved.logs);
-    } catch {}
-  }, []);
+  const calc=useMemo(()=>{
+    const equity=Number(rules.equity)||0, entry=Number(plan.entry)||0, stop=Number(plan.stop)||0, target=Number(plan.target)||0;
+    const riskUsd=equity*(Number(rules.riskPct)||0)/100;
+    const dist=Math.abs(entry-stop);
+    const qty=dist?riskUsd/dist:0;
+    const rr=dist?Math.abs(target-entry)/dist:0;
+    const openRisk=positions.reduce((s,p)=>s+Number(p.riskUsd||0),0);
+    const afterRisk=openRisk+riskUsd;
+    const afterRiskPct=equity?afterRisk/equity*100:0;
+    const realized=closed.filter(isToday).reduce((s,t)=>s+Number(t.pnl||0),0);
+    const dailyLossPct=equity?Math.max(0,-realized)/equity*100:0;
+    const blocks=[];
+    if(!plan.symbol||!plan.setup||!entry||!stop||!target) blocks.push('กรอกแผนให้ครบ');
+    if(entry===stop) blocks.push('SL ใช้ไม่ได้');
+    if(afterRiskPct>Number(rules.maxPortfolioRiskPct)) blocks.push('Portfolio Risk เกิน limit');
+    if(positions.length+1>Number(rules.maxOpen)) blocks.push('Open Positions เกิน limit');
+    if(dailyLossPct>=Number(rules.dailyLossPct)) blocks.push('Daily Loss Limit ถึงแล้ว');
+    return{riskUsd,qty,rr,openRisk,afterRiskPct,realized,dailyLossPct,blocks,status:blocks.length?'BLOCK':'PASS'};
+  },[rules,plan,positions,closed]);
 
-  useEffect(() => {
-    localStorage.setItem('nos_trading_os', JSON.stringify({ rules, positions, day, logs }));
-  }, [rules, positions, day, logs]);
+  const todayClosed=closed.filter(isToday);
+  const todayPnl=todayClosed.reduce((s,t)=>s+Number(t.pnl||0),0);
+  const giveback=Math.max(0,Number(day.peak||0)-Number(day.current||0));
+  const riskBudget=Math.max(0,(Number(rules.equity)||0)*Number(rules.maxPortfolioRiskPct)/100-calc.openRisk);
+  const discipline=todayClosed.length?Math.round(todayClosed.filter(t=>t.followedPlan).length/todayClosed.length*100):100;
+  const winRate=todayClosed.length?Math.round(todayClosed.filter(t=>t.pnl>0).length/todayClosed.length*100):0;
 
-  const calc = useMemo(() => {
-    const equity = Number(rules.equity) || 0;
-    const entry = Number(trade.entry) || 0;
-    const stop = Number(trade.stop) || 0;
-    const target = Number(trade.target) || 0;
-    const riskBudget = equity * ((Number(rules.riskPerTradePct) || 0) / 100);
-    const stopDist = Math.abs(entry - stop);
-    const qty = stopDist > 0 ? riskBudget / stopDist : 0;
-    const plannedReward = Math.abs(target - entry) * qty;
-    const rr = riskBudget > 0 ? plannedReward / riskBudget : 0;
-    const openRisk = positions.reduce((s, p) => s + Number(p.riskUsd || 0), 0);
-    const afterRisk = openRisk + riskBudget;
-    const afterRiskPct = equity ? (afterRisk / equity) * 100 : 0;
-    const currentPnl = Number(day.currentPnl) || 0;
-    const peakPnl = Math.max(Number(day.peakPnl) || 0, currentPnl);
-    const giveback = Math.max(0, peakPnl - currentPnl);
-    const givebackPct = peakPnl > 0 ? (giveback / peakPnl) * 100 : 0;
-    const dailyLossPct = equity ? Math.max(0, -(Number(day.realizedPnl) || 0)) / equity * 100 : 0;
-
-    const blocks = [];
-    const cautions = [];
-    if (!trade.symbol || !trade.setup || !entry || !stop || !target) blocks.push('Trade plan incomplete');
-    if (entry === stop) blocks.push('Invalid stop distance');
-    if (afterRiskPct > Number(rules.maxPortfolioRiskPct)) blocks.push('Portfolio risk exceeds limit');
-    if (positions.length + 1 > Number(rules.maxOpenPositions)) blocks.push('Too many open positions');
-    if (Number(trade.sameDirectionCount) + 1 > Number(rules.maxCorrelatedPositions) && trade.correlation === 'High') blocks.push('High correlated exposure');
-    if (dailyLossPct >= Number(rules.dailyLossLimitPct)) blocks.push('Daily loss kill switch reached');
-    if (givebackPct >= Number(rules.maxGivebackPct) && peakPnl > 0) cautions.push('Large profit giveback today');
-    if (trade.mentalState !== 'Calm') cautions.push(`Mental state: ${trade.mentalState}`);
-    if (Number(trade.confidence) <= 2) cautions.push('Low confidence');
-    if (Number(trade.currentPortfolioPnl) > 0) cautions.push('Risk is being added while portfolio is profitable');
-
-    const status = blocks.length ? 'NO TRADE' : cautions.length ? 'CAUTION' : 'TRADE ALLOWED';
-    return { riskBudget, qty, rr, openRisk, afterRiskPct, giveback, givebackPct, dailyLossPct, blocks, cautions, status };
-  }, [rules, trade, positions, day]);
-
-  const executionScore = Object.values(execution).filter(Boolean).length;
-
-  function addPosition() {
-    if (calc.status === 'NO TRADE') return;
-    const item = {
-      id: crypto.randomUUID(),
-      symbol: trade.symbol.toUpperCase(),
-      side: trade.side,
-      setup: trade.setup,
-      riskUsd: calc.riskBudget,
-      rr: calc.rr,
-      correlation: trade.correlation,
-      mentalState: trade.mentalState,
-      portfolioPnlAtEntry: Number(trade.currentPortfolioPnl) || 0,
-      createdAt: new Date().toISOString(),
-    };
-    setPositions((x) => [item, ...x]);
-    setTrade(emptyTrade);
+  function openTrade(){
+    if(calc.status==='BLOCK')return;
+    const p={id:crypto.randomUUID(),...plan,symbol:plan.symbol.toUpperCase(),entry:Number(plan.entry),stop:Number(plan.stop),target:Number(plan.target),riskUsd:calc.riskUsd,qty:calc.qty,rr:calc.rr,openedAt:new Date().toISOString()};
+    setPositions(v=>[p,...v]);setPlan(EMPTY_PLAN);setTab('Active');
   }
 
-  function closePosition(id) {
-    setPositions((x) => x.filter((p) => p.id !== id));
+  function prepareClose(p){setCloseForm({id:p.id,exit:'',reason:'Take Profit',followedPlan:true,note:''});setTab('Review')}
+  function closeTrade(){
+    const p=positions.find(x=>x.id===closeForm.id); if(!p||!Number(closeForm.exit))return;
+    const exit=Number(closeForm.exit), dir=p.side==='Long'?1:-1;
+    const pnl=(exit-p.entry)*dir*p.qty;
+    const r=p.riskUsd?pnl/p.riskUsd:0;
+    const row={...p,exit,pnl,r,closeReason:closeForm.reason,followedPlan:closeForm.followedPlan,note:closeForm.note,closedAt:new Date().toISOString()};
+    setClosed(v=>[row,...v]);setPositions(v=>v.filter(x=>x.id!==p.id));setCloseForm(EMPTY_CLOSE);setTab('Today');
   }
 
-  function saveExecution() {
-    const item = {
-      id: crypto.randomUUID(),
-      at: new Date().toISOString(),
-      score: executionScore,
-      ...execution,
-    };
-    setLogs((x) => [item, ...x].slice(0, 50));
-  }
+  return <main className="appShell">
+    <aside className="sidebar">
+      <div className="brand">NØS <span>COCKPIT</span></div>
+      {['Today','Plan Trade','Active','Review','History','Settings'].map(x=><button key={x} className={tab===x?'nav active':'nav'} onClick={()=>setTab(x)}>{x}</button>)}
+      <div className="sideRule">PROCESS &gt; P&L</div>
+    </aside>
 
-  const openRiskPct = Number(rules.equity) ? (calc.openRisk / Number(rules.equity)) * 100 : 0;
+    <section className="workspace">
+      <header className="pageHead"><div><p className="eyebrow">DAILY TRADING COCKPIT</p><h1>{tab}</h1></div><div className={`gate ${calc.status==='PASS'?'pass':'block'}`}><small>TRADE STATUS</small><b>{calc.status==='PASS'?'TRADE ALLOWED':'NO TRADE'}</b></div></header>
 
-  return (
-    <main className="shell">
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">NØS SYSTEMATIC TRADING</div>
-          <h1>Trading System OS</h1>
-          <p>Risk Engine · Exposure Control · Behavior · Execution</p>
+      {tab==='Today'&&<>
+        <section className="kpis">
+          <Kpi label="Today P&L" value={money(todayPnl)} sub={`${todayClosed.length} closed trades`} tone={todayPnl<0?'bad':todayPnl>0?'good':''}/>
+          <Kpi label="Open Risk" value={money(calc.openRisk)} sub={`${pct(calc.openRisk/rules.equity*100)} of equity`}/>
+          <Kpi label="Risk Budget Left" value={money(riskBudget)} sub={`limit ${rules.maxPortfolioRiskPct}%`}/>
+          <Kpi label="Open Positions" value={positions.length} sub={`max ${rules.maxOpen}`}/>
+          <Kpi label="Discipline" value={`${discipline}%`} sub="followed plan" tone={discipline<80?'bad':'good'}/>
+          <Kpi label="Win Rate Today" value={`${winRate}%`} sub={`${todayClosed.filter(x=>x.pnl>0).length}/${todayClosed.length}`}/>
+        </section>
+        <section className="twoCol">
+          <Panel title="Today's Control" sub="เปิดดูแค่สิ่งที่ต้องตัดสินใจตอนนี้">
+            <div className="controlGrid">
+              <Field label="Peak P&L"><input type="number" value={day.peak} onChange={e=>setDay({...day,peak:Number(e.target.value)})}/></Field>
+              <Field label="Current P&L"><input type="number" value={day.current} onChange={e=>setDay({...day,current:Number(e.target.value)})}/></Field>
+            </div>
+            <div className="controlStatus"><span>Giveback from Peak</span><b>{money(giveback)}</b></div>
+            <div className="controlStatus"><span>Daily Loss Used</span><b>{pct(calc.dailyLossPct)} / {rules.dailyLossPct}%</b></div>
+            <button className="primary" onClick={()=>setTab('Plan Trade')}>+ Plan New Trade</button>
+          </Panel>
+          <Panel title="Active Positions" sub="สิ่งที่กำลังเสี่ยงอยู่ตอนนี้">
+            {positions.length===0?<Empty text="No active positions"/>:<div className="stack">{positions.map(p=><PositionCard key={p.id} p={p} onClose={()=>prepareClose(p)}/>)}</div>}
+          </Panel>
+        </section>
+      </>}
+
+      {tab==='Plan Trade'&&<Panel title="Plan Trade" sub="กรอกเฉพาะสิ่งที่รู้ก่อนเข้า ระบบคำนวณส่วนที่เหลือให้">
+        <div className="formGrid">
+          <Field label="Exchange"><select value={plan.exchange} onChange={e=>setPlan({...plan,exchange:e.target.value})}><option>Binance</option><option>OKX</option><option>XM</option><option>Dime</option></select></Field>
+          <Field label="Symbol"><input value={plan.symbol} onChange={e=>setPlan({...plan,symbol:e.target.value})} placeholder="BTCUSDT"/></Field>
+          <Field label="Side"><select value={plan.side} onChange={e=>setPlan({...plan,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
+          <Field label="Setup"><input value={plan.setup} onChange={e=>setPlan({...plan,setup:e.target.value})} placeholder="Pullback / Breakout"/></Field>
+          <Field label="Entry"><input type="number" value={plan.entry} onChange={e=>setPlan({...plan,entry:e.target.value})}/></Field>
+          <Field label="Stop Loss"><input type="number" value={plan.stop} onChange={e=>setPlan({...plan,stop:e.target.value})}/></Field>
+          <Field label="Take Profit"><input type="number" value={plan.target} onChange={e=>setPlan({...plan,target:e.target.value})}/></Field>
         </div>
-        <div className={`permission ${calc.status.replace(' ', '-').toLowerCase()}`}>
-          <span>PRE-TRADE GATE</span>
-          <strong>{calc.status}</strong>
-        </div>
-      </header>
+        <div className="calcStrip"><Mini label="Risk" value={money(calc.riskUsd)}/><Mini label="Position Qty" value={calc.qty?calc.qty.toFixed(4):'—'}/><Mini label="Planned R:R" value={calc.rr?`${calc.rr.toFixed(2)}R`:'—'}/><Mini label="Risk After Entry" value={pct(calc.afterRiskPct)}/></div>
+        {calc.blocks.length>0&&<div className="warnings">{calc.blocks.map(x=><div key={x}>BLOCK · {x}</div>)}</div>}
+        <button className="primary" disabled={calc.status==='BLOCK'} onClick={openTrade}>Open Approved Position</button>
+      </Panel>}
 
-      <section className="metricGrid">
-        <Metric label="Open Risk" value={`$${calc.openRisk.toFixed(0)}`} sub={`${openRiskPct.toFixed(2)}% of equity`} />
-        <Metric label="Risk Limit" value={`${rules.maxPortfolioRiskPct}%`} sub={`$${(rules.equity * rules.maxPortfolioRiskPct / 100).toFixed(0)}`} />
-        <Metric label="Open Positions" value={positions.length} sub={`max ${rules.maxOpenPositions}`} />
-        <Metric label="Today Peak P&L" value={`$${Number(day.peakPnl || 0).toFixed(0)}`} />
-        <Metric label="Current P&L" value={`$${Number(day.currentPnl || 0).toFixed(0)}`} />
-        <Metric label="Giveback" value={`$${calc.giveback.toFixed(0)}`} sub={`${calc.givebackPct.toFixed(1)}% from peak`} warn={calc.givebackPct >= rules.maxGivebackPct} />
-      </section>
+      {tab==='Active'&&<Panel title="Active Positions" sub="เปิดจริง → อยู่ตรงนี้ → ปิดจากตรงนี้">
+        {positions.length===0?<Empty text="No active positions"/>:<div className="stack">{positions.map(p=><PositionCard key={p.id} p={p} onClose={()=>prepareClose(p)}/>)}</div>}
+      </Panel>}
 
-      <section className="grid2">
-        <Card title="Pre-Trade Gate" subtitle="ระบบต้องอนุญาตก่อนเพิ่ม Risk">
+      {tab==='Review'&&<Panel title="Close & Review" sub="ผูก outcome กับ trade เดิม ไม่ต้องกรอกซ้ำ">
+        {!closeForm.id?<><p className="muted">เลือก Close จาก Active Position ก่อน</p><button className="secondary" onClick={()=>setTab('Active')}>Go to Active Positions</button></>:<>
+          <div className="reviewTrade">{positions.find(x=>x.id===closeForm.id)?.symbol} · {positions.find(x=>x.id===closeForm.id)?.side} · {positions.find(x=>x.id===closeForm.id)?.setup}</div>
           <div className="formGrid">
-            <Field label="Symbol"><input value={trade.symbol} onChange={e => setTrade({ ...trade, symbol: e.target.value })} placeholder="BTCUSDT" /></Field>
-            <Field label="Side"><select value={trade.side} onChange={e => setTrade({ ...trade, side: e.target.value })}><option>Long</option><option>Short</option></select></Field>
-            <Field label="Setup"><input value={trade.setup} onChange={e => setTrade({ ...trade, setup: e.target.value })} placeholder="Breakout / Pullback" /></Field>
-            <Field label="Entry"><input type="number" value={trade.entry} onChange={e => setTrade({ ...trade, entry: e.target.value })} /></Field>
-            <Field label="Stop"><input type="number" value={trade.stop} onChange={e => setTrade({ ...trade, stop: e.target.value })} /></Field>
-            <Field label="Target"><input type="number" value={trade.target} onChange={e => setTrade({ ...trade, target: e.target.value })} /></Field>
-            <Field label="Portfolio P&L now"><input type="number" value={trade.currentPortfolioPnl} onChange={e => setTrade({ ...trade, currentPortfolioPnl: e.target.value })} placeholder="0" /></Field>
-            <Field label="Same-direction positions"><input type="number" min="0" value={trade.sameDirectionCount} onChange={e => setTrade({ ...trade, sameDirectionCount: e.target.value })} /></Field>
-            <Field label="Correlation"><select value={trade.correlation} onChange={e => setTrade({ ...trade, correlation: e.target.value })}><option>Low</option><option>Medium</option><option>High</option></select></Field>
-            <Field label="Mental state"><select value={trade.mentalState} onChange={e => setTrade({ ...trade, mentalState: e.target.value })}><option>Calm</option><option>FOMO</option><option>Frustrated</option><option>Revenge</option><option>Overconfident</option><option>Tired</option><option>Bored</option></select></Field>
-            <Field label="Confidence 1–5"><input type="number" min="1" max="5" value={trade.confidence} onChange={e => setTrade({ ...trade, confidence: e.target.value })} /></Field>
-          </div>
+            <Field label="Exit Price"><input type="number" value={closeForm.exit} onChange={e=>setCloseForm({...closeForm,exit:e.target.value})}/></Field>
+            <Field label="Close Reason"><select value={closeForm.reason} onChange={e=>setCloseForm({...closeForm,reason:e.target.value})}><option>Take Profit</option><option>Stop Loss</option><option>Structure Changed</option><option>Early Exit</option><option>Manual Exit</option></select></Field>
+            <Field label="Followed Plan?"><select value={closeForm.followedPlan?'Yes':'No'} onChange={e=>setCloseForm({...closeForm,followedPlan:e.target.value==='Yes'})}><option>Yes</option><option>No</option></select></Field>
+            <Field label="Note"><input value={closeForm.note} onChange={e=>setCloseForm({...closeForm,note:e.target.value})} placeholder="Why did I exit?"/></Field>
+          </div><button className="primary" onClick={closeTrade}>Close Position & Save Review</button>
+        </>}
+      </Panel>}
 
-          <div className="decisionBox">
-            <div><span>Risk / Trade</span><b>${calc.riskBudget.toFixed(2)}</b></div>
-            <div><span>Position Qty</span><b>{calc.qty.toFixed(4)}</b></div>
-            <div><span>Planned R:R</span><b>{calc.rr.toFixed(2)}R</b></div>
-            <div><span>Risk after entry</span><b>{calc.afterRiskPct.toFixed(2)}%</b></div>
-          </div>
+      {tab==='History'&&<Panel title="Trade History" sub="ดู Decision Quality พร้อม P&L">
+        {closed.length===0?<Empty text="No closed trades yet"/>:<div className="tableWrap"><table><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Setup</th><th>P&L</th><th>R</th><th>Reason</th><th>Plan</th></tr></thead><tbody>{closed.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.setup}</td><td className={t.pnl<0?'badText':'goodText'}>{money(t.pnl)}</td><td>{Number(t.r).toFixed(2)}R</td><td>{t.closeReason}</td><td>{t.followedPlan?'PASS':'FAIL'}</td></tr>)}</tbody></table></div>}
+      </Panel>}
 
-          {(calc.blocks.length > 0 || calc.cautions.length > 0) && <div className="alerts">
-            {calc.blocks.map(x => <div className="alert block" key={x}>BLOCK · {x}</div>)}
-            {calc.cautions.map(x => <div className="alert caution" key={x}>CAUTION · {x}</div>)}
-          </div>}
-          <button className="primary" disabled={calc.status === 'NO TRADE'} onClick={addPosition}>Add Approved Position</button>
-        </Card>
-
-        <Card title="Daily Risk Control" subtitle="กำไรเพิ่ม ≠ สิทธิ์ในการเพิ่ม Risk">
-          <div className="formGrid compact">
-            <Field label="Equity ($)"><input type="number" value={rules.equity} onChange={e => setRules({ ...rules, equity: Number(e.target.value) })} /></Field>
-            <Field label="Risk / Trade %"><input type="number" step="0.05" value={rules.riskPerTradePct} onChange={e => setRules({ ...rules, riskPerTradePct: Number(e.target.value) })} /></Field>
-            <Field label="Max Portfolio Risk %"><input type="number" step="0.1" value={rules.maxPortfolioRiskPct} onChange={e => setRules({ ...rules, maxPortfolioRiskPct: Number(e.target.value) })} /></Field>
-            <Field label="Daily Loss Limit %"><input type="number" step="0.1" value={rules.dailyLossLimitPct} onChange={e => setRules({ ...rules, dailyLossLimitPct: Number(e.target.value) })} /></Field>
-            <Field label="Max Open Positions"><input type="number" value={rules.maxOpenPositions} onChange={e => setRules({ ...rules, maxOpenPositions: Number(e.target.value) })} /></Field>
-            <Field label="Max Correlated"><input type="number" value={rules.maxCorrelatedPositions} onChange={e => setRules({ ...rules, maxCorrelatedPositions: Number(e.target.value) })} /></Field>
-            <Field label="Max Giveback %"><input type="number" value={rules.maxGivebackPct} onChange={e => setRules({ ...rules, maxGivebackPct: Number(e.target.value) })} /></Field>
-          </div>
-          <div className="divider" />
-          <div className="formGrid compact">
-            <Field label="Today Peak P&L"><input type="number" value={day.peakPnl} onChange={e => setDay({ ...day, peakPnl: Number(e.target.value) })} /></Field>
-            <Field label="Current P&L"><input type="number" value={day.currentPnl} onChange={e => setDay({ ...day, currentPnl: Number(e.target.value) })} /></Field>
-            <Field label="Realized P&L"><input type="number" value={day.realizedPnl} onChange={e => setDay({ ...day, realizedPnl: Number(e.target.value) })} /></Field>
-          </div>
-          <div className="killSwitch">
-            <span>Daily Loss Used</span>
-            <b>{calc.dailyLossPct.toFixed(2)}% / {rules.dailyLossLimitPct}%</b>
-          </div>
-        </Card>
-      </section>
-
-      <section className="grid2 lower">
-        <Card title="Portfolio Exposure" subtitle="มองทุก position เป็น portfolio เดียวกัน">
-          {positions.length === 0 ? <Empty text="ยังไม่มี Approved Position" /> : <div className="tableWrap"><table><thead><tr><th>Symbol</th><th>Side</th><th>Setup</th><th>Risk</th><th>R:R</th><th>Correlation</th><th>P&L at Entry</th><th></th></tr></thead><tbody>{positions.map(p => <tr key={p.id}><td><b>{p.symbol}</b></td><td>{p.side}</td><td>{p.setup}</td><td>${Number(p.riskUsd).toFixed(0)}</td><td>{Number(p.rr).toFixed(2)}R</td><td><span className={`tag ${p.correlation.toLowerCase()}`}>{p.correlation}</span></td><td>${Number(p.portfolioPnlAtEntry).toFixed(0)}</td><td><button className="textBtn" onClick={() => closePosition(p.id)}>Close</button></td></tr>)}</tbody></table></div>}
-        </Card>
-
-        <Card title="Execution Score" subtitle="ตัดสินคุณภาพ Decision ไม่ใช่ P&L">
-          <div className="scoreRow"><div className="scoreCircle"><strong>{executionScore}</strong><span>/5</span></div><div><h3>{executionScore === 5 ? 'PASS' : executionScore >= 4 ? 'WATCH' : 'FAIL'}</h3><p>A -1R trade ที่ 5/5 ยังเป็น Good Trade</p></div></div>
-          <div className="checks">
-            {[
-              ['entry','Entry matches setup'],
-              ['risk','Risk per trade correct'],
-              ['portfolio','Portfolio exposure within rule'],
-              ['management','Management according to plan'],
-              ['exit','Exit according to rule']
-            ].map(([k,label]) => <label key={k}><input type="checkbox" checked={execution[k]} onChange={e => setExecution({ ...execution, [k]: e.target.checked })} /><span>{label}</span></label>)}
-          </div>
-          <button className="secondary" onClick={saveExecution}>Save Execution Score</button>
-          {logs.length > 0 && <div className="miniLog">Last scores: {logs.slice(0,8).map(x => <span key={x.id}>{x.score}/5</span>)}</div>}
-        </Card>
-      </section>
-
-      <section className="principles">
-        <div><b>1</b><span>Good Decision + Profit</span><strong>GOOD</strong></div>
-        <div><b>2</b><span>Good Decision + Loss</span><strong>ACCEPT</strong></div>
-        <div><b>3</b><span>Bad Decision + Profit</span><strong>DANGEROUS</strong></div>
-        <div><b>4</b><span>Bad Decision + Loss</span><strong>FIX</strong></div>
-      </section>
-    </main>
-  );
+      {tab==='Settings'&&<Panel title="Risk Rules" sub="ตั้งครั้งเดียว แล้วใช้เป็น hard guardrails">
+        <div className="formGrid">
+          <Field label="Equity ($)"><input type="number" value={rules.equity} onChange={e=>setRules({...rules,equity:Number(e.target.value)})}/></Field>
+          <Field label="Risk / Trade %"><input type="number" step=".05" value={rules.riskPct} onChange={e=>setRules({...rules,riskPct:Number(e.target.value)})}/></Field>
+          <Field label="Max Portfolio Risk %"><input type="number" step=".1" value={rules.maxPortfolioRiskPct} onChange={e=>setRules({...rules,maxPortfolioRiskPct:Number(e.target.value)})}/></Field>
+          <Field label="Daily Loss Limit %"><input type="number" step=".1" value={rules.dailyLossPct} onChange={e=>setRules({...rules,dailyLossPct:Number(e.target.value)})}/></Field>
+          <Field label="Max Open Positions"><input type="number" value={rules.maxOpen} onChange={e=>setRules({...rules,maxOpen:Number(e.target.value)})}/></Field>
+        </div>
+      </Panel>}
+    </section>
+  </main>
 }
 
-function Card({ title, subtitle, children }) {
-  return <section className="card"><div className="cardHead"><div><h2>{title}</h2><p>{subtitle}</p></div></div>{children}</section>;
-}
-function Field({ label, children }) { return <label className="field"><span>{label}</span>{children}</label>; }
-function Metric({ label, value, sub, warn }) { return <div className={`metric ${warn ? 'warn' : ''}`}><span>{label}</span><strong>{value}</strong>{sub && <small>{sub}</small>}</div>; }
-function Empty({ text }) { return <div className="empty">{text}</div>; }
+function isToday(t){const d=new Date(t.closedAt||0),n=new Date();return d.toDateString()===n.toDateString()}
+function money(n){return `${Number(n||0)<0?'−':''}$${Math.abs(Number(n||0)).toFixed(0)}`}
+function pct(n){return `${Number(n||0).toFixed(2)}%`}
+function Kpi({label,value,sub,tone=''}){return <div className={`kpi ${tone}`}><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>}
+function Panel({title,sub,children}){return <section className="panel"><div className="panelHead"><h2>{title}</h2><p>{sub}</p></div>{children}</section>}
+function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
+function Mini({label,value}){return <div><span>{label}</span><b>{value}</b></div>}
+function Empty({text}){return <div className="empty">{text}</div>}
+function PositionCard({p,onClose}){return <div className="position"><div><div className="positionTitle"><b>{p.symbol}</b><span>{p.exchange}</span><span className={p.side==='Long'?'long':'short'}>{p.side}</span></div><small>{p.setup}</small></div><div className="positionNums"><span>Entry <b>{p.entry}</b></span><span>SL <b>{p.stop}</b></span><span>TP <b>{p.target}</b></span><span>Risk <b>{money(p.riskUsd)}</b></span><span>R:R <b>{Number(p.rr).toFixed(2)}R</b></span></div><button className="closeBtn" onClick={onClose}>Close</button></div>}
