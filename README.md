@@ -25,3 +25,5 @@ A separate systematic-trading support app focused on decision quality, portfolio
 
 ## Data note
 This first version intentionally uses browser localStorage so it is completely isolated from the existing NØS Trading Monitor and cannot modify its database. A later version can add a dedicated Supabase project for cross-device sync and analytics.
+
+Deployment trigger: Git-connected production build.
