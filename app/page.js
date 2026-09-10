@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 
 const DEFAULT_RULES={equity:14000,riskPct:.75,maxPortfolioRiskPct:2,dailyLossPct:2.25,maxOpen:4};
-const EMPTY_PLAN={exchange:'Binance',symbol:'',side:'Long',setup:'',entry:'',stop:'',target:''};
+const EMPTY_PLAN={exchange:'Binance',symbol:'',side:'Long',setup:'',entry:'',stop:'',target:'',leverage:10,positionSize:''};
 const EMPTY_CLOSE={id:'',exit:'',reason:'Take Profit',followedPlan:true,note:''};
 
 export default function Home(){
@@ -21,9 +21,17 @@ export default function Home(){
 
   const calc=useMemo(()=>{
     const equity=Number(rules.equity)||0, entry=Number(plan.entry)||0, stop=Number(plan.stop)||0, target=Number(plan.target)||0;
-    const riskUsd=equity*(Number(rules.riskPct)||0)/100;
+    const plannedRiskUsd=equity*(Number(rules.riskPct)||0)/100;
     const dist=Math.abs(entry-stop);
-    const qty=dist?riskUsd/dist:0;
+    const recommendedQty=dist?plannedRiskUsd/dist:0;
+    const recommendedNotional=recommendedQty*entry;
+    const leverage=Math.max(1,Number(plan.leverage)||1);
+    const manualSize=Number(plan.positionSize)||0;
+    const isXM=plan.exchange==='XM';
+    const actualNotional=!isXM&&manualSize>0?manualSize:recommendedNotional;
+    const qty=!isXM&&manualSize>0&&entry?manualSize/entry:recommendedQty;
+    const riskUsd=!isXM&&manualSize>0?dist*qty:plannedRiskUsd;
+    const marginRequired=!isXM?actualNotional/leverage:0;
     const rr=dist?Math.abs(target-entry)/dist:0;
     const openRisk=positions.reduce((s,p)=>s+Number(p.riskUsd||0),0);
     const afterRisk=openRisk+riskUsd;
@@ -36,7 +44,7 @@ export default function Home(){
     if(afterRiskPct>Number(rules.maxPortfolioRiskPct)) blocks.push('Portfolio Risk เกิน limit');
     if(positions.length+1>Number(rules.maxOpen)) blocks.push('Open Positions เกิน limit');
     if(dailyLossPct>=Number(rules.dailyLossPct)) blocks.push('Daily Loss Limit ถึงแล้ว');
-    return{riskUsd,qty,rr,openRisk,afterRiskPct,realized,dailyLossPct,blocks,status:blocks.length?'BLOCK':'PASS'};
+    return{plannedRiskUsd,riskUsd,qty,recommendedQty,recommendedNotional,actualNotional,leverage,marginRequired,rr,openRisk,afterRiskPct,realized,dailyLossPct,blocks,status:blocks.length?'BLOCK':'PASS'};
   },[rules,plan,positions,closed]);
 
   const todayClosed=closed.filter(isToday);
@@ -48,7 +56,7 @@ export default function Home(){
 
   function openTrade(){
     if(calc.status==='BLOCK')return;
-    const p={id:crypto.randomUUID(),...plan,symbol:plan.symbol.toUpperCase(),entry:Number(plan.entry),stop:Number(plan.stop),target:Number(plan.target),riskUsd:calc.riskUsd,qty:calc.qty,rr:calc.rr,openedAt:new Date().toISOString()};
+    const p={id:crypto.randomUUID(),...plan,symbol:plan.symbol.toUpperCase(),entry:Number(plan.entry),stop:Number(plan.stop),target:Number(plan.target),leverage:calc.leverage,positionSize:plan.exchange==='XM'?(Number(plan.positionSize)||0):calc.actualNotional,riskUsd:calc.riskUsd,qty:calc.qty,rr:calc.rr,marginRequired:calc.marginRequired,openedAt:new Date().toISOString()};
     setPositions(v=>[p,...v]);setPlan(EMPTY_PLAN);setTab('Active');
   }
 
@@ -97,17 +105,20 @@ export default function Home(){
         </section>
       </>}
 
-      {tab==='Plan Trade'&&<Panel title="Plan Trade" sub="กรอกเฉพาะสิ่งที่รู้ก่อนเข้า ระบบคำนวณส่วนที่เหลือให้">
+      {tab==='Plan Trade'&&<Panel title="Plan Trade" sub="กรอกแผน แล้วระบบคำนวณ Risk, Position Size และ Margin ให้">
         <div className="formGrid">
-          <Field label="Exchange"><select value={plan.exchange} onChange={e=>setPlan({...plan,exchange:e.target.value})}><option>Binance</option><option>OKX</option><option>XM</option><option>Dime</option></select></Field>
+          <Field label="Exchange"><select value={plan.exchange} onChange={e=>setPlan({...plan,exchange:e.target.value,positionSize:''})}><option>Binance</option><option>OKX</option><option>XM</option><option>Dime</option></select></Field>
           <Field label="Symbol"><input value={plan.symbol} onChange={e=>setPlan({...plan,symbol:e.target.value})} placeholder="BTCUSDT"/></Field>
           <Field label="Side"><select value={plan.side} onChange={e=>setPlan({...plan,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
           <Field label="Setup"><input value={plan.setup} onChange={e=>setPlan({...plan,setup:e.target.value})} placeholder="Pullback / Breakout"/></Field>
           <Field label="Entry"><input type="number" value={plan.entry} onChange={e=>setPlan({...plan,entry:e.target.value})}/></Field>
           <Field label="Stop Loss"><input type="number" value={plan.stop} onChange={e=>setPlan({...plan,stop:e.target.value})}/></Field>
           <Field label="Take Profit"><input type="number" value={plan.target} onChange={e=>setPlan({...plan,target:e.target.value})}/></Field>
+          <Field label="Leverage"><input type="number" min="1" value={plan.leverage} onChange={e=>setPlan({...plan,leverage:e.target.value})} placeholder="10"/></Field>
+          <Field label={plan.exchange==='XM'?'Position Size (Lot)':'Position Size (USDT / $)'}><input type="number" value={plan.positionSize} onChange={e=>setPlan({...plan,positionSize:e.target.value})} placeholder={plan.exchange==='XM'?'เช่น 0.10':'เว้นว่าง = Auto Size'}/></Field>
         </div>
-        <div className="calcStrip"><Mini label="Risk" value={money(calc.riskUsd)}/><Mini label="Position Qty" value={calc.qty?calc.qty.toFixed(4):'—'}/><Mini label="Planned R:R" value={calc.rr?`${calc.rr.toFixed(2)}R`:'—'}/><Mini label="Risk After Entry" value={pct(calc.afterRiskPct)}/></div>
+        <div className="calcStrip"><Mini label="Risk" value={money(calc.riskUsd)}/><Mini label={plan.exchange==='XM'?'Recommended Qty*':'Auto Position Size'} value={plan.exchange==='XM'?(calc.qty?calc.qty.toFixed(4):'—'):(calc.recommendedNotional?money(calc.recommendedNotional):'—')}/><Mini label="Position Qty" value={calc.qty?calc.qty.toFixed(4):'—'}/><Mini label="Planned R:R" value={calc.rr?`${calc.rr.toFixed(2)}R`:'—'}/><Mini label="Leverage" value={`${calc.leverage}x`}/><Mini label="Est. Margin" value={plan.exchange==='XM'?'—':money(calc.marginRequired)}/><Mini label="Risk After Entry" value={pct(calc.afterRiskPct)}/></div>
+        {plan.exchange==='XM'&&<p className="muted">*XM เก็บ Position Size เป็น Lot แต่การคำนวณ P&L/Risk แบบแม่นยำต้องรู้ contract size ของสินทรัพย์ จึงยังใช้สูตร generic ในเวอร์ชันนี้</p>}
         {calc.blocks.length>0&&<div className="warnings">{calc.blocks.map(x=><div key={x}>BLOCK · {x}</div>)}</div>}
         <button className="primary" disabled={calc.status==='BLOCK'} onClick={openTrade}>Open Approved Position</button>
       </Panel>}
@@ -129,7 +140,7 @@ export default function Home(){
       </Panel>}
 
       {tab==='History'&&<Panel title="Trade History" sub="ดู Decision Quality พร้อม P&L">
-        {closed.length===0?<Empty text="No closed trades yet"/>:<div className="tableWrap"><table><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Setup</th><th>P&L</th><th>R</th><th>Reason</th><th>Plan</th></tr></thead><tbody>{closed.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.setup}</td><td className={t.pnl<0?'badText':'goodText'}>{money(t.pnl)}</td><td>{Number(t.r).toFixed(2)}R</td><td>{t.closeReason}</td><td>{t.followedPlan?'PASS':'FAIL'}</td></tr>)}</tbody></table></div>}
+        {closed.length===0?<Empty text="No closed trades yet"/>:<div className="tableWrap"><table><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th><th>Plan</th></tr></thead><tbody>{closed.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${Number(t.positionSize||0)} lot`:money(t.positionSize||0)}</td><td>{Number(t.leverage||1)}x</td><td className={t.pnl<0?'badText':'goodText'}>{money(t.pnl)}</td><td>{Number(t.r).toFixed(2)}R</td><td>{t.closeReason}</td><td>{t.followedPlan?'PASS':'FAIL'}</td></tr>)}</tbody></table></div>}
       </Panel>}
 
       {tab==='Settings'&&<Panel title="Risk Rules" sub="ตั้งครั้งเดียว แล้วใช้เป็น hard guardrails">
@@ -153,4 +164,4 @@ function Panel({title,sub,children}){return <section className="panel"><div clas
 function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
 function Mini({label,value}){return <div><span>{label}</span><b>{value}</b></div>}
 function Empty({text}){return <div className="empty">{text}</div>}
-function PositionCard({p,onClose}){return <div className="position"><div><div className="positionTitle"><b>{p.symbol}</b><span>{p.exchange}</span><span className={p.side==='Long'?'long':'short'}>{p.side}</span></div><small>{p.setup}</small></div><div className="positionNums"><span>Entry <b>{p.entry}</b></span><span>SL <b>{p.stop}</b></span><span>TP <b>{p.target}</b></span><span>Risk <b>{money(p.riskUsd)}</b></span><span>R:R <b>{Number(p.rr).toFixed(2)}R</b></span></div><button className="closeBtn" onClick={onClose}>Close</button></div>}
+function PositionCard({p,onClose}){return <div className="position"><div><div className="positionTitle"><b>{p.symbol}</b><span>{p.exchange}</span><span className={p.side==='Long'?'long':'short'}>{p.side}</span></div><small>{p.setup}</small></div><div className="positionNums"><span>Entry <b>{p.entry}</b></span><span>SL <b>{p.stop}</b></span><span>TP <b>{p.target}</b></span><span>Size <b>{p.exchange==='XM'?`${Number(p.positionSize||0)} lot`:money(p.positionSize||0)}</b></span><span>Lev <b>{Number(p.leverage||1)}x</b></span><span>Risk <b>{money(p.riskUsd)}</b></span><span>R:R <b>{Number(p.rr).toFixed(2)}R</b></span></div><button className="closeBtn" onClick={onClose}>Close</button></div>}
