@@ -2,166 +2,229 @@
 
 import { useEffect, useMemo, useState } from 'react';
 
-const DEFAULT_RULES={equity:14000,riskPct:.75,maxPortfolioRiskPct:2,dailyLossPct:2.25,maxOpen:4};
-const EMPTY_PLAN={exchange:'Binance',symbol:'',side:'Long',setup:'',entry:'',stop:'',target:'',leverage:10,positionSize:''};
-const EMPTY_CLOSE={id:'',exit:'',reason:'Take Profit',followedPlan:true,note:''};
+const DEFAULT_ACCOUNTS = {
+  Binance: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 10 },
+  OKX: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 10 },
+  XM: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 100 },
+};
 
-export default function Home(){
-  const [tab,setTab]=useState('Today');
-  const [rules,setRules]=useState(DEFAULT_RULES);
-  const [plan,setPlan]=useState(EMPTY_PLAN);
-  const [positions,setPositions]=useState([]);
-  const [closed,setClosed]=useState([]);
-  const [closeForm,setCloseForm]=useState(EMPTY_CLOSE);
-  const [day,setDay]=useState({peak:0,current:0});
-  const [loaded,setLoaded]=useState(false);
+const EMPTY_TRADE = {
+  exchange: 'Binance', symbol: '', side: 'Long', entry: '', stop: '', target: '',
+  leverage: 10, sizeMode: 'Auto', manualSize: '', contractSize: 100,
+};
 
-  useEffect(()=>{try{const x=JSON.parse(localStorage.getItem('nos_cockpit_v2')||'{}');if(x.rules)setRules(x.rules);if(x.positions)setPositions(x.positions);if(x.closed)setClosed(x.closed);if(x.day)setDay(x.day)}catch{}setLoaded(true)},[]);
-  useEffect(()=>{if(loaded)localStorage.setItem('nos_cockpit_v2',JSON.stringify({rules,positions,closed,day}))},[loaded,rules,positions,closed,day]);
+export default function Home() {
+  const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
+  const [trade, setTrade] = useState(EMPTY_TRADE);
+  const [positions, setPositions] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [marks, setMarks] = useState({});
+  const [view, setView] = useState('Trade');
+  const [loaded, setLoaded] = useState(false);
 
-  const calc=useMemo(()=>{
-    const equity=Number(rules.equity)||0, entry=Number(plan.entry)||0, stop=Number(plan.stop)||0, target=Number(plan.target)||0;
-    const plannedRiskUsd=equity*(Number(rules.riskPct)||0)/100;
-    const dist=Math.abs(entry-stop);
-    const recommendedQty=dist?plannedRiskUsd/dist:0;
-    const recommendedNotional=recommendedQty*entry;
-    const leverage=Math.max(1,Number(plan.leverage)||1);
-    const manualSize=Number(plan.positionSize)||0;
-    const isXM=plan.exchange==='XM';
-    const actualNotional=!isXM&&manualSize>0?manualSize:recommendedNotional;
-    const qty=!isXM&&manualSize>0&&entry?manualSize/entry:recommendedQty;
-    const riskUsd=!isXM&&manualSize>0?dist*qty:plannedRiskUsd;
-    const marginRequired=!isXM?actualNotional/leverage:0;
-    const rr=dist?Math.abs(target-entry)/dist:0;
-    const openRisk=positions.reduce((s,p)=>s+Number(p.riskUsd||0),0);
-    const afterRisk=openRisk+riskUsd;
-    const afterRiskPct=equity?afterRisk/equity*100:0;
-    const realized=closed.filter(isToday).reduce((s,t)=>s+Number(t.pnl||0),0);
-    const dailyLossPct=equity?Math.max(0,-realized)/equity*100:0;
-    const blocks=[];
-    if(!plan.symbol||!plan.setup||!entry||!stop||!target) blocks.push('กรอกแผนให้ครบ');
-    if(entry===stop) blocks.push('SL ใช้ไม่ได้');
-    if(afterRiskPct>Number(rules.maxPortfolioRiskPct)) blocks.push('Portfolio Risk เกิน limit');
-    if(positions.length+1>Number(rules.maxOpen)) blocks.push('Open Positions เกิน limit');
-    if(dailyLossPct>=Number(rules.dailyLossPct)) blocks.push('Daily Loss Limit ถึงแล้ว');
-    return{plannedRiskUsd,riskUsd,qty,recommendedQty,recommendedNotional,actualNotional,leverage,marginRequired,rr,openRisk,afterRiskPct,realized,dailyLossPct,blocks,status:blocks.length?'BLOCK':'PASS'};
-  },[rules,plan,positions,closed]);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('nos_cockpit_v3') || '{}');
+      if (saved.accounts) setAccounts(saved.accounts);
+      if (saved.positions) setPositions(saved.positions);
+      if (saved.history) setHistory(saved.history);
+      if (saved.marks) setMarks(saved.marks);
+    } catch {}
+    setLoaded(true);
+  }, []);
 
-  const todayClosed=closed.filter(isToday);
-  const todayPnl=todayClosed.reduce((s,t)=>s+Number(t.pnl||0),0);
-  const giveback=Math.max(0,Number(day.peak||0)-Number(day.current||0));
-  const riskBudget=Math.max(0,(Number(rules.equity)||0)*Number(rules.maxPortfolioRiskPct)/100-calc.openRisk);
-  const discipline=todayClosed.length?Math.round(todayClosed.filter(t=>t.followedPlan).length/todayClosed.length*100):100;
-  const winRate=todayClosed.length?Math.round(todayClosed.filter(t=>t.pnl>0).length/todayClosed.length*100):0;
+  useEffect(() => {
+    if (loaded) localStorage.setItem('nos_cockpit_v3', JSON.stringify({ accounts, positions, history, marks }));
+  }, [loaded, accounts, positions, history, marks]);
 
-  function openTrade(){
-    if(calc.status==='BLOCK')return;
-    const p={id:crypto.randomUUID(),...plan,symbol:plan.symbol.toUpperCase(),entry:Number(plan.entry),stop:Number(plan.stop),target:Number(plan.target),leverage:calc.leverage,positionSize:plan.exchange==='XM'?(Number(plan.positionSize)||0):calc.actualNotional,riskUsd:calc.riskUsd,qty:calc.qty,rr:calc.rr,marginRequired:calc.marginRequired,openedAt:new Date().toISOString()};
-    setPositions(v=>[p,...v]);setPlan(EMPTY_PLAN);setTab('Active');
+  const account = accounts[trade.exchange] || DEFAULT_ACCOUNTS.Binance;
+
+  useEffect(() => {
+    setTrade(t => ({ ...t, leverage: accounts[t.exchange]?.leverage || 1, manualSize: '' }));
+  }, [accounts]);
+
+  const calc = useMemo(() => {
+    const entry = Number(trade.entry) || 0;
+    const stop = Number(trade.stop) || 0;
+    const target = Number(trade.target) || 0;
+    const equity = Number(account.equity) || 0;
+    const plannedRisk = equity * (Number(account.riskPct) || 0) / 100;
+    const leverage = Math.max(1, Number(trade.leverage) || 1);
+    const distance = Math.abs(entry - stop);
+    const stopPct = entry ? distance / entry : 0;
+    const isXM = trade.exchange === 'XM';
+    const contractSize = Math.max(0.000001, Number(trade.contractSize) || 1);
+
+    let autoSize = 0;
+    let actualSize = 0;
+    let qty = 0;
+    let actualRisk = 0;
+    let margin = 0;
+
+    if (isXM) {
+      const riskPerLot = distance * contractSize;
+      autoSize = riskPerLot ? plannedRisk / riskPerLot : 0;
+      actualSize = trade.sizeMode === 'Manual' ? (Number(trade.manualSize) || 0) : autoSize;
+      qty = actualSize;
+      actualRisk = riskPerLot * actualSize;
+      margin = entry && actualSize ? entry * contractSize * actualSize / leverage : 0;
+    } else {
+      autoSize = stopPct ? plannedRisk / stopPct : 0; // USDT notional
+      actualSize = trade.sizeMode === 'Manual' ? (Number(trade.manualSize) || 0) : autoSize;
+      qty = entry ? actualSize / entry : 0;
+      actualRisk = actualSize * stopPct;
+      margin = actualSize / leverage;
+    }
+
+    const rr = distance ? Math.abs(target - entry) / distance : 0;
+    const openRisk = positions
+      .filter(p => p.exchange === trade.exchange)
+      .reduce((s, p) => s + Number(p.riskUsd || 0), 0);
+    const afterRisk = openRisk + actualRisk;
+    const afterRiskPct = equity ? afterRisk / equity * 100 : 0;
+
+    const errors = [];
+    if (!trade.symbol) errors.push('ใส่ Symbol');
+    if (!entry || !stop || !target) errors.push('ใส่ Entry / SL / TP ให้ครบ');
+    if (trade.side === 'Long' && entry && stop && stop >= entry) errors.push('Long ต้องมี SL ต่ำกว่า Entry');
+    if (trade.side === 'Long' && entry && target && target <= entry) errors.push('Long ต้องมี TP สูงกว่า Entry');
+    if (trade.side === 'Short' && entry && stop && stop <= entry) errors.push('Short ต้องมี SL สูงกว่า Entry');
+    if (trade.side === 'Short' && entry && target && target >= entry) errors.push('Short ต้องมี TP ต่ำกว่า Entry');
+    if (trade.sizeMode === 'Manual' && !actualSize) errors.push('ใส่ Position Size');
+    if (afterRiskPct > Number(account.maxRiskPct)) errors.push('Portfolio Risk เกิน Max Risk');
+
+    return { entry, stop, target, plannedRisk, stopPct, autoSize, actualSize, qty, actualRisk, margin, rr, openRisk, afterRiskPct, leverage, errors };
+  }, [trade, account, positions]);
+
+  const selectedPositions = positions.filter(p => p.exchange === trade.exchange);
+  const accountOpenRisk = selectedPositions.reduce((s, p) => s + Number(p.riskUsd || 0), 0);
+  const accountRiskPct = Number(account.equity) ? accountOpenRisk / Number(account.equity) * 100 : 0;
+  const unrealized = selectedPositions.reduce((sum, p) => sum + unrealizedPnl(p, marks[p.id]), 0);
+
+  function changeExchange(exchange) {
+    const a = accounts[exchange];
+    setTrade({ ...EMPTY_TRADE, exchange, leverage: a?.leverage || 1, contractSize: exchange === 'XM' ? 100 : 1 });
   }
 
-  function prepareClose(p){setCloseForm({id:p.id,exit:'',reason:'Take Profit',followedPlan:true,note:''});setTab('Review')}
-  function closeTrade(){
-    const p=positions.find(x=>x.id===closeForm.id); if(!p||!Number(closeForm.exit))return;
-    const exit=Number(closeForm.exit), dir=p.side==='Long'?1:-1;
-    const pnl=(exit-p.entry)*dir*p.qty;
-    const r=p.riskUsd?pnl/p.riskUsd:0;
-    const row={...p,exit,pnl,r,closeReason:closeForm.reason,followedPlan:closeForm.followedPlan,note:closeForm.note,closedAt:new Date().toISOString()};
-    setClosed(v=>[row,...v]);setPositions(v=>v.filter(x=>x.id!==p.id));setCloseForm(EMPTY_CLOSE);setTab('Today');
+  function addPosition() {
+    if (calc.errors.length) return;
+    const p = {
+      id: crypto.randomUUID(), exchange: trade.exchange, symbol: trade.symbol.toUpperCase(), side: trade.side,
+      entry: calc.entry, stop: calc.stop, target: calc.target, leverage: calc.leverage,
+      positionSize: calc.actualSize, qty: calc.qty, riskUsd: calc.actualRisk, rr: calc.rr,
+      contractSize: Number(trade.contractSize) || 1, openedAt: new Date().toISOString(),
+    };
+    setPositions(v => [p, ...v]);
+    setMarks(m => ({ ...m, [p.id]: calc.entry }));
+    const ex = trade.exchange;
+    setTrade({ ...EMPTY_TRADE, exchange: ex, leverage: accounts[ex]?.leverage || 1, contractSize: ex === 'XM' ? 100 : 1 });
+    setView('Positions');
   }
 
-  return <main className="appShell">
-    <aside className="sidebar">
-      <div className="brand">NØS <span>COCKPIT</span></div>
-      {['Today','Plan Trade','Active','Review','History','Settings'].map(x=><button key={x} className={tab===x?'nav active':'nav'} onClick={()=>setTab(x)}>{x}</button>)}
-      <div className="sideRule">PROCESS &gt; P&L</div>
-    </aside>
+  function closePosition(p) {
+    const exit = Number(marks[p.id]);
+    if (!exit) return;
+    const pnl = pnlAtPrice(p, exit);
+    const r = p.riskUsd ? pnl / p.riskUsd : 0;
+    const reason = window.prompt('Close reason: TP / SL / Early / Manual', 'Manual') || 'Manual';
+    const row = { ...p, exit, pnl, r, reason, closedAt: new Date().toISOString() };
+    setHistory(v => [row, ...v]);
+    setPositions(v => v.filter(x => x.id !== p.id));
+    setMarks(m => { const n = { ...m }; delete n[p.id]; return n; });
+  }
 
-    <section className="workspace">
-      <header className="pageHead"><div><p className="eyebrow">DAILY TRADING COCKPIT</p><h1>{tab}</h1></div><div className={`gate ${calc.status==='PASS'?'pass':'block'}`}><small>TRADE STATUS</small><b>{calc.status==='PASS'?'TRADE ALLOWED':'NO TRADE'}</b></div></header>
+  return <main className="shell">
+    <header className="top">
+      <div><div className="brand">NØS RISK DESK</div><h1>Trading Cockpit</h1><p>คำนวณ Size → เช็ก Risk → เปิด Position → ติดตาม → ปิด</p></div>
+      <nav>{['Trade','Positions','History','Settings'].map(x => <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
+    </header>
 
-      {tab==='Today'&&<>
-        <section className="kpis">
-          <Kpi label="Today P&L" value={money(todayPnl)} sub={`${todayClosed.length} closed trades`} tone={todayPnl<0?'bad':todayPnl>0?'good':''}/>
-          <Kpi label="Open Risk" value={money(calc.openRisk)} sub={`${pct(calc.openRisk/rules.equity*100)} of equity`}/>
-          <Kpi label="Risk Budget Left" value={money(riskBudget)} sub={`limit ${rules.maxPortfolioRiskPct}%`}/>
-          <Kpi label="Open Positions" value={positions.length} sub={`max ${rules.maxOpen}`}/>
-          <Kpi label="Discipline" value={`${discipline}%`} sub="followed plan" tone={discipline<80?'bad':'good'}/>
-          <Kpi label="Win Rate Today" value={`${winRate}%`} sub={`${todayClosed.filter(x=>x.pnl>0).length}/${todayClosed.length}`}/>
-        </section>
-        <section className="twoCol">
-          <Panel title="Today's Control" sub="เปิดดูแค่สิ่งที่ต้องตัดสินใจตอนนี้">
-            <div className="controlGrid">
-              <Field label="Peak P&L"><input type="number" value={day.peak} onChange={e=>setDay({...day,peak:Number(e.target.value)})}/></Field>
-              <Field label="Current P&L"><input type="number" value={day.current} onChange={e=>setDay({...day,current:Number(e.target.value)})}/></Field>
-            </div>
-            <div className="controlStatus"><span>Giveback from Peak</span><b>{money(giveback)}</b></div>
-            <div className="controlStatus"><span>Daily Loss Used</span><b>{pct(calc.dailyLossPct)} / {rules.dailyLossPct}%</b></div>
-            <button className="primary" onClick={()=>setTab('Plan Trade')}>+ Plan New Trade</button>
-          </Panel>
-          <Panel title="Active Positions" sub="สิ่งที่กำลังเสี่ยงอยู่ตอนนี้">
-            {positions.length===0?<Empty text="No active positions"/>:<div className="stack">{positions.map(p=><PositionCard key={p.id} p={p} onClose={()=>prepareClose(p)}/>)}</div>}
-          </Panel>
-        </section>
-      </>}
+    <div className="accountTabs">
+      {Object.keys(accounts).map(ex => <button key={ex} className={trade.exchange===ex?'selected':''} onClick={()=>changeExchange(ex)}>{ex}<small>${Number(accounts[ex].equity||0).toLocaleString()}</small></button>)}
+    </div>
 
-      {tab==='Plan Trade'&&<Panel title="Plan Trade" sub="กรอกแผน แล้วระบบคำนวณ Risk, Position Size และ Margin ให้">
-        <div className="formGrid">
-          <Field label="Exchange"><select value={plan.exchange} onChange={e=>setPlan({...plan,exchange:e.target.value,positionSize:''})}><option>Binance</option><option>OKX</option><option>XM</option><option>Dime</option></select></Field>
-          <Field label="Symbol"><input value={plan.symbol} onChange={e=>setPlan({...plan,symbol:e.target.value})} placeholder="BTCUSDT"/></Field>
-          <Field label="Side"><select value={plan.side} onChange={e=>setPlan({...plan,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
-          <Field label="Setup"><input value={plan.setup} onChange={e=>setPlan({...plan,setup:e.target.value})} placeholder="Pullback / Breakout"/></Field>
-          <Field label="Entry"><input type="number" value={plan.entry} onChange={e=>setPlan({...plan,entry:e.target.value})}/></Field>
-          <Field label="Stop Loss"><input type="number" value={plan.stop} onChange={e=>setPlan({...plan,stop:e.target.value})}/></Field>
-          <Field label="Take Profit"><input type="number" value={plan.target} onChange={e=>setPlan({...plan,target:e.target.value})}/></Field>
-          <Field label="Leverage"><input type="number" min="1" value={plan.leverage} onChange={e=>setPlan({...plan,leverage:e.target.value})} placeholder="10"/></Field>
-          <Field label={plan.exchange==='XM'?'Position Size (Lot)':'Position Size (USDT / $)'}><input type="number" value={plan.positionSize} onChange={e=>setPlan({...plan,positionSize:e.target.value})} placeholder={plan.exchange==='XM'?'เช่น 0.10':'เว้นว่าง = Auto Size'}/></Field>
-        </div>
-        <div className="calcStrip"><Mini label="Risk" value={money(calc.riskUsd)}/><Mini label={plan.exchange==='XM'?'Recommended Qty*':'Auto Position Size'} value={plan.exchange==='XM'?(calc.qty?calc.qty.toFixed(4):'—'):(calc.recommendedNotional?money(calc.recommendedNotional):'—')}/><Mini label="Position Qty" value={calc.qty?calc.qty.toFixed(4):'—'}/><Mini label="Planned R:R" value={calc.rr?`${calc.rr.toFixed(2)}R`:'—'}/><Mini label="Leverage" value={`${calc.leverage}x`}/><Mini label="Est. Margin" value={plan.exchange==='XM'?'—':money(calc.marginRequired)}/><Mini label="Risk After Entry" value={pct(calc.afterRiskPct)}/></div>
-        {plan.exchange==='XM'&&<p className="muted">*XM เก็บ Position Size เป็น Lot แต่การคำนวณ P&L/Risk แบบแม่นยำต้องรู้ contract size ของสินทรัพย์ จึงยังใช้สูตร generic ในเวอร์ชันนี้</p>}
-        {calc.blocks.length>0&&<div className="warnings">{calc.blocks.map(x=><div key={x}>BLOCK · {x}</div>)}</div>}
-        <button className="primary" disabled={calc.status==='BLOCK'} onClick={openTrade}>Open Approved Position</button>
-      </Panel>}
-
-      {tab==='Active'&&<Panel title="Active Positions" sub="เปิดจริง → อยู่ตรงนี้ → ปิดจากตรงนี้">
-        {positions.length===0?<Empty text="No active positions"/>:<div className="stack">{positions.map(p=><PositionCard key={p.id} p={p} onClose={()=>prepareClose(p)}/>)}</div>}
-      </Panel>}
-
-      {tab==='Review'&&<Panel title="Close & Review" sub="ผูก outcome กับ trade เดิม ไม่ต้องกรอกซ้ำ">
-        {!closeForm.id?<><p className="muted">เลือก Close จาก Active Position ก่อน</p><button className="secondary" onClick={()=>setTab('Active')}>Go to Active Positions</button></>:<>
-          <div className="reviewTrade">{positions.find(x=>x.id===closeForm.id)?.symbol} · {positions.find(x=>x.id===closeForm.id)?.side} · {positions.find(x=>x.id===closeForm.id)?.setup}</div>
-          <div className="formGrid">
-            <Field label="Exit Price"><input type="number" value={closeForm.exit} onChange={e=>setCloseForm({...closeForm,exit:e.target.value})}/></Field>
-            <Field label="Close Reason"><select value={closeForm.reason} onChange={e=>setCloseForm({...closeForm,reason:e.target.value})}><option>Take Profit</option><option>Stop Loss</option><option>Structure Changed</option><option>Early Exit</option><option>Manual Exit</option></select></Field>
-            <Field label="Followed Plan?"><select value={closeForm.followedPlan?'Yes':'No'} onChange={e=>setCloseForm({...closeForm,followedPlan:e.target.value==='Yes'})}><option>Yes</option><option>No</option></select></Field>
-            <Field label="Note"><input value={closeForm.note} onChange={e=>setCloseForm({...closeForm,note:e.target.value})} placeholder="Why did I exit?"/></Field>
-          </div><button className="primary" onClick={closeTrade}>Close Position & Save Review</button>
-        </>}
-      </Panel>}
-
-      {tab==='History'&&<Panel title="Trade History" sub="ดู Decision Quality พร้อม P&L">
-        {closed.length===0?<Empty text="No closed trades yet"/>:<div className="tableWrap"><table><thead><tr><th>Date</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th><th>Plan</th></tr></thead><tbody>{closed.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${Number(t.positionSize||0)} lot`:money(t.positionSize||0)}</td><td>{Number(t.leverage||1)}x</td><td className={t.pnl<0?'badText':'goodText'}>{money(t.pnl)}</td><td>{Number(t.r).toFixed(2)}R</td><td>{t.closeReason}</td><td>{t.followedPlan?'PASS':'FAIL'}</td></tr>)}</tbody></table></div>}
-      </Panel>}
-
-      {tab==='Settings'&&<Panel title="Risk Rules" sub="ตั้งครั้งเดียว แล้วใช้เป็น hard guardrails">
-        <div className="formGrid">
-          <Field label="Equity ($)"><input type="number" value={rules.equity} onChange={e=>setRules({...rules,equity:Number(e.target.value)})}/></Field>
-          <Field label="Risk / Trade %"><input type="number" step=".05" value={rules.riskPct} onChange={e=>setRules({...rules,riskPct:Number(e.target.value)})}/></Field>
-          <Field label="Max Portfolio Risk %"><input type="number" step=".1" value={rules.maxPortfolioRiskPct} onChange={e=>setRules({...rules,maxPortfolioRiskPct:Number(e.target.value)})}/></Field>
-          <Field label="Daily Loss Limit %"><input type="number" step=".1" value={rules.dailyLossPct} onChange={e=>setRules({...rules,dailyLossPct:Number(e.target.value)})}/></Field>
-          <Field label="Max Open Positions"><input type="number" value={rules.maxOpen} onChange={e=>setRules({...rules,maxOpen:Number(e.target.value)})}/></Field>
-        </div>
-      </Panel>}
+    <section className="metrics">
+      <Metric label="Account Equity" value={usd(account.equity)} />
+      <Metric label="Open Risk" value={usd(accountOpenRisk)} sub={`${accountRiskPct.toFixed(2)}%`} />
+      <Metric label="Unrealized P&L" value={signedUsd(unrealized)} tone={unrealized>0?'good':unrealized<0?'bad':''} />
+      <Metric label="Open Positions" value={selectedPositions.length} />
     </section>
+
+    {view==='Trade' && <section className="layout">
+      <div className="card">
+        <div className="cardHead"><h2>New Trade</h2><p>กรอกเฉพาะข้อมูลที่มีอยู่ใน order ticket</p></div>
+        <div className="form">
+          <Field label="Symbol"><input value={trade.symbol} onChange={e=>setTrade({...trade,symbol:e.target.value})} placeholder={trade.exchange==='XM'?'XAUUSD':'BTCUSDT'} /></Field>
+          <Field label="Side"><select value={trade.side} onChange={e=>setTrade({...trade,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
+          <Field label="Entry"><input type="number" value={trade.entry} onChange={e=>setTrade({...trade,entry:e.target.value})} /></Field>
+          <Field label="Stop Loss"><input type="number" value={trade.stop} onChange={e=>setTrade({...trade,stop:e.target.value})} /></Field>
+          <Field label="Take Profit"><input type="number" value={trade.target} onChange={e=>setTrade({...trade,target:e.target.value})} /></Field>
+          <Field label="Leverage"><input type="number" min="1" value={trade.leverage} onChange={e=>setTrade({...trade,leverage:e.target.value})} /></Field>
+          {trade.exchange==='XM' && <Field label="Contract Size / 1 Lot"><input type="number" value={trade.contractSize} onChange={e=>setTrade({...trade,contractSize:e.target.value})} /></Field>}
+          <Field label="Sizing"><select value={trade.sizeMode} onChange={e=>setTrade({...trade,sizeMode:e.target.value,manualSize:''})}><option>Auto</option><option>Manual</option></select></Field>
+          {trade.sizeMode==='Manual' && <Field label={trade.exchange==='XM'?'Position Size (Lot)':'Position Size (USDT)'}><input type="number" value={trade.manualSize} onChange={e=>setTrade({...trade,manualSize:e.target.value})} /></Field>}
+        </div>
+      </div>
+
+      <div className="card result">
+        <div className="cardHead"><h2>Risk Check</h2><p>{account.riskPct}% risk per trade · max portfolio {account.maxRiskPct}%</p></div>
+        <Result label="Risk Budget" value={usd(calc.plannedRisk)} />
+        <Result label="SL Distance" value={`${(calc.stopPct*100).toFixed(2)}%`} />
+        <Result label={trade.exchange==='XM'?'Position Size':'Position Size'} value={trade.exchange==='XM'?`${fmt(calc.actualSize,3)} lot`:usd(calc.actualSize)} strong />
+        {trade.exchange!=='XM' && <Result label="Quantity" value={fmt(calc.qty,6)} />}
+        <Result label="Leverage" value={`${calc.leverage}x`} />
+        <Result label="Margin Required" value={usd(calc.margin)} />
+        <Result label="Actual Risk at SL" value={`${usd(calc.actualRisk)} · ${account.equity ? (calc.actualRisk/account.equity*100).toFixed(2) : '0.00'}%`} />
+        <Result label="Planned R:R" value={`${calc.rr.toFixed(2)}R`} />
+        <Result label="Portfolio Risk After" value={`${calc.afterRiskPct.toFixed(2)}%`} />
+        {calc.errors.length>0 && <div className="errors">{calc.errors.map(x=><div key={x}>• {x}</div>)}</div>}
+        <button className="openBtn" disabled={calc.errors.length>0} onClick={addPosition}>OPEN POSITION</button>
+      </div>
+    </section>}
+
+    {view==='Positions' && <section className="card">
+      <div className="cardHead"><h2>Active Positions — {trade.exchange}</h2><p>ใส่ Current Price เพื่อดู P&L และใช้ราคานั้นปิด Position</p></div>
+      {selectedPositions.length===0 ? <Empty/> : <div className="positionList">{selectedPositions.map(p => {
+        const mark = marks[p.id] ?? '';
+        const pnl = unrealizedPnl(p, mark);
+        return <div className="pos" key={p.id}>
+          <div className="posTitle"><b>{p.symbol}</b><span className={p.side==='Long'?'long':'short'}>{p.side}</span><small>{p.leverage}x</small></div>
+          <div className="posData"><span>Entry<b>{fmt(p.entry,6)}</b></span><span>SL<b>{fmt(p.stop,6)}</b></span><span>TP<b>{fmt(p.target,6)}</b></span><span>Size<b>{p.exchange==='XM'?`${fmt(p.positionSize,3)} lot`:usd(p.positionSize)}</b></span><span>Risk<b>{usd(p.riskUsd)}</b></span></div>
+          <div className="markBox"><label>Current Price</label><input type="number" value={mark} onChange={e=>setMarks({...marks,[p.id]:e.target.value})}/><strong className={pnl>0?'goodText':pnl<0?'badText':''}>{signedUsd(pnl)}</strong></div>
+          <button className="closeBtn" disabled={!Number(mark)} onClick={()=>closePosition(p)}>Close @ Current</button>
+        </div>
+      })}</div>}
+    </section>}
+
+    {view==='History' && <section className="card">
+      <div className="cardHead"><h2>History</h2><p>Closed trades</p></div>
+      {history.length===0 ? <Empty/> : <div className="tableWrap"><table><thead><tr><th>Date</th><th>Exchange</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th></tr></thead><tbody>{history.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td>{t.exchange}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${fmt(t.positionSize,3)} lot`:usd(t.positionSize)}</td><td>{t.leverage}x</td><td className={t.pnl>=0?'goodText':'badText'}>{signedUsd(t.pnl)}</td><td>{Number(t.r||0).toFixed(2)}R</td><td>{t.reason}</td></tr>)}</tbody></table></div>}
+    </section>}
+
+    {view==='Settings' && <section className="card">
+      <div className="cardHead"><h2>Account Risk Settings</h2><p>ตั้ง Balance และ Guardrail แยกแต่ละพอร์ต</p></div>
+      <div className="settingsGrid">{Object.entries(accounts).map(([ex,a])=><div className="accountCard" key={ex}><h3>{ex}</h3>
+        <Field label="Equity ($)"><input type="number" value={a.equity} onChange={e=>setAccounts({...accounts,[ex]:{...a,equity:Number(e.target.value)}})} /></Field>
+        <Field label="Risk / Trade %"><input type="number" step="0.1" value={a.riskPct} onChange={e=>setAccounts({...accounts,[ex]:{...a,riskPct:Number(e.target.value)}})} /></Field>
+        <Field label="Max Portfolio Risk %"><input type="number" step="0.1" value={a.maxRiskPct} onChange={e=>setAccounts({...accounts,[ex]:{...a,maxRiskPct:Number(e.target.value)}})} /></Field>
+        <Field label="Default Leverage"><input type="number" value={a.leverage} onChange={e=>setAccounts({...accounts,[ex]:{...a,leverage:Number(e.target.value)}})} /></Field>
+      </div>)}</div>
+    </section>}
   </main>
 }
 
-function isToday(t){const d=new Date(t.closedAt||0),n=new Date();return d.toDateString()===n.toDateString()}
-function money(n){return `${Number(n||0)<0?'−':''}$${Math.abs(Number(n||0)).toFixed(0)}`}
-function pct(n){return `${Number(n||0).toFixed(2)}%`}
-function Kpi({label,value,sub,tone=''}){return <div className={`kpi ${tone}`}><span>{label}</span><strong>{value}</strong><small>{sub}</small></div>}
-function Panel({title,sub,children}){return <section className="panel"><div className="panelHead"><h2>{title}</h2><p>{sub}</p></div>{children}</section>}
+function pnlAtPrice(p, price) {
+  const px = Number(price) || 0;
+  if (!px) return 0;
+  const dir = p.side === 'Long' ? 1 : -1;
+  if (p.exchange === 'XM') return (px - p.entry) * dir * Number(p.contractSize || 1) * Number(p.positionSize || 0);
+  return (px - p.entry) * dir * Number(p.qty || 0);
+}
+function unrealizedPnl(p, price){ return pnlAtPrice(p, price); }
+function usd(n){ return `$${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`; }
+function signedUsd(n){ const x=Number(n||0); return `${x>0?'+':x<0?'−':''}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:2})}`; }
+function fmt(n,d=2){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d}); }
+function Metric({label,value,sub,tone=''}){return <div className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong>{sub&&<small>{sub}</small>}</div>}
 function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
-function Mini({label,value}){return <div><span>{label}</span><b>{value}</b></div>}
-function Empty({text}){return <div className="empty">{text}</div>}
-function PositionCard({p,onClose}){return <div className="position"><div><div className="positionTitle"><b>{p.symbol}</b><span>{p.exchange}</span><span className={p.side==='Long'?'long':'short'}>{p.side}</span></div><small>{p.setup}</small></div><div className="positionNums"><span>Entry <b>{p.entry}</b></span><span>SL <b>{p.stop}</b></span><span>TP <b>{p.target}</b></span><span>Size <b>{p.exchange==='XM'?`${Number(p.positionSize||0)} lot`:money(p.positionSize||0)}</b></span><span>Lev <b>{Number(p.leverage||1)}x</b></span><span>Risk <b>{money(p.riskUsd)}</b></span><span>R:R <b>{Number(p.rr).toFixed(2)}R</b></span></div><button className="closeBtn" onClick={onClose}>Close</button></div>}
+function Result({label,value,strong=false}){return <div className={`resultRow ${strong?'strong':''}`}><span>{label}</span><b>{value}</b></div>}
+function Empty(){return <div className="empty">ยังไม่มีข้อมูล</div>}
