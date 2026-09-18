@@ -1,230 +1,79 @@
 'use client';
+import {useEffect,useMemo,useState} from 'react';
 
-import { useEffect, useMemo, useState } from 'react';
+const DEFAULT_SETTINGS={equity:10000,riskPct:.5,maxDailyR:2,maxWeeklyR:5,maxOpenR:2.5,minScore:70,minRR:2,scaleTrades:50,scalePF:1.3,scaleAdherence:90,scaleDD:6};
+const EMPTY={symbol:'',side:'Long',entry:'',stop:'',target:'',leverage:5,setup:'A1 Trend Continuation',structure:20,confirmation:20,rrScore:20,riskScore:20,notes:''};
+const PLAYBOOK=[
+ {id:'A1',name:'Trend Continuation',rules:'HTF aligned · pullback · liquidity/trigger · RR ≥ 2.5'},
+ {id:'A2',name:'Reversal',rules:'HTF level · sweep/rejection · confirmation · defined invalidation'},
+ {id:'B1',name:'Breakout',rules:'Compression · clean level · volume/acceptance · no chase'}
+];
 
-const DEFAULT_ACCOUNTS = {
-  Binance: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 10 },
-  OKX: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 10 },
-  XM: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 100 },
-};
+export default function Home(){
+ const [view,setView]=useState('Dashboard'),[settings,setSettings]=useState(DEFAULT_SETTINGS),[trade,setTrade]=useState(EMPTY);
+ const [positions,setPositions]=useState([]),[history,setHistory]=useState([]),[marks,setMarks]=useState({}),[loaded,setLoaded]=useState(false);
+ useEffect(()=>{try{const s=JSON.parse(localStorage.getItem('nos_trading_os_v1')||'{}');if(s.settings)setSettings(s.settings);if(s.positions)setPositions(s.positions);if(s.history)setHistory(s.history);if(s.marks)setMarks(s.marks)}catch{}setLoaded(true)},[]);
+ useEffect(()=>{if(loaded)localStorage.setItem('nos_trading_os_v1',JSON.stringify({settings,positions,history,marks}))},[loaded,settings,positions,history,marks]);
 
-const EMPTY_TRADE = {
-  exchange: 'Binance', symbol: '', side: 'Long', entry: '', stop: '', target: '',
-  leverage: 10, sizeMode: 'Auto', manualSize: '', contractSize: 100,
-};
+ const stats=useMemo(()=>calcStats(history),[history]);
+ const today=new Date().toDateString();
+ const todayTrades=history.filter(t=>new Date(t.closedAt).toDateString()===today);
+ const todayR=todayTrades.reduce((s,t)=>s+Number(t.r||0),0);
+ const openR=positions.reduce((s,p)=>s+Number(p.riskUsd||0)/(settings.equity*settings.riskPct/100||1),0);
+ const calc=useMemo(()=>{
+  const e=+trade.entry||0,s=+trade.stop||0,t=+trade.target||0,dist=Math.abs(e-s),risk=settings.equity*settings.riskPct/100;
+  const stopPct=e?dist/e:0,size=stopPct?risk/stopPct:0,qty=e?size/e:0,margin=size/(+trade.leverage||1),rr=dist?Math.abs(t-e)/dist:0;
+  const setupScore=trade.setup.startsWith('A1')?20:trade.setup.startsWith('A2')?17:13;
+  const score=Math.round(setupScore+(+trade.structure||0)+(+trade.confirmation||0)+(rr>=3?20:rr>=2?16:rr>=1.5?10:4)+(+trade.riskScore||0));
+  const errors=[];
+  if(!trade.symbol)errors.push('ใส่ Symbol');
+  if(!e||!s||!t)errors.push('ใส่ Entry / SL / TP ให้ครบ');
+  if(trade.side==='Long'&&e&&s>=e)errors.push('Long: SL ต้องต่ำกว่า Entry');
+  if(trade.side==='Short'&&e&&s<=e)errors.push('Short: SL ต้องสูงกว่า Entry');
+  if(rr&&rr<settings.minRR)errors.push('R:R ต่ำกว่า minimum');
+  if(score<settings.minScore)errors.push('Pre-trade score ไม่ผ่าน');
+  if(todayR<=-settings.maxDailyR)errors.push('Daily loss limit reached');
+  if(openR+1>settings.maxOpenR)errors.push('Open risk limit exceeded');
+  return{e,s,t,risk,size,qty,margin,rr,score,errors};
+ },[trade,settings,todayR,openR]);
 
-export default function Home() {
-  const [accounts, setAccounts] = useState(DEFAULT_ACCOUNTS);
-  const [trade, setTrade] = useState(EMPTY_TRADE);
-  const [positions, setPositions] = useState([]);
-  const [history, setHistory] = useState([]);
-  const [marks, setMarks] = useState({});
-  const [view, setView] = useState('Trade');
-  const [loaded, setLoaded] = useState(false);
+ function openTrade(){if(calc.errors.length)return;const p={id:crypto.randomUUID(),...trade,symbol:trade.symbol.toUpperCase(),entry:calc.e,stop:calc.s,target:calc.t,riskUsd:calc.risk,size:calc.size,qty:calc.qty,rr:calc.rr,score:calc.score,openedAt:new Date().toISOString()};setPositions(v=>[p,...v]);setMarks(m=>({...m,[p.id]:calc.e}));setTrade(EMPTY);setView('Positions')}
+ function closeTrade(p){const exit=+marks[p.id];if(!exit)return;const dir=p.side==='Long'?1:-1,pnl=(exit-p.entry)*dir*p.qty,r=p.riskUsd?pnl/p.riskUsd:0;const followed=window.confirm('Did you follow the plan? OK = Yes / Cancel = No');const emotion=window.prompt('Emotion: Calm / FOMO / Fear / Revenge / Greed','Calm')||'Calm';const mistake=followed?'None':(window.prompt('Mistake: Early Entry / Early Exit / Oversize / Moved SL / No Setup','Early Exit')||'Rule violation');const reason=window.prompt('Close reason: TP / SL / Early / Manual','Manual')||'Manual';setHistory(v=>[{...p,exit,pnl,r,followed,emotion,mistake,reason,closedAt:new Date().toISOString()},...v]);setPositions(v=>v.filter(x=>x.id!==p.id));setMarks(m=>{const n={...m};delete n[p.id];return n})}
 
-  useEffect(() => {
-    try {
-      const saved = JSON.parse(localStorage.getItem('nos_cockpit_v3') || '{}');
-      if (saved.accounts) setAccounts(saved.accounts);
-      if (saved.positions) setPositions(saved.positions);
-      if (saved.history) setHistory(saved.history);
-      if (saved.marks) setMarks(saved.marks);
-    } catch {}
-    setLoaded(true);
-  }, []);
+ const nav=['Dashboard','Plan','Positions','Journal','Playbook','Analytics','Scale','Settings'];
+ return <main className="shell"><header><div><div className="brand">NØS TRADING OS</div><h1>{view}</h1><p>PLAN → VALIDATE → SIZE → EXECUTE → REVIEW → SCALE</p></div><nav>{nav.map(n=><button className={view===n?'active':''} onClick={()=>setView(n)} key={n}>{n}</button>)}</nav></header>
 
-  useEffect(() => {
-    if (loaded) localStorage.setItem('nos_cockpit_v3', JSON.stringify({ accounts, positions, history, marks }));
-  }, [loaded, accounts, positions, history, marks]);
+ {view==='Dashboard'&&<><section className="metrics"><Metric l="TODAY" v={rFmt(todayR)} s="Realized R"/><Metric l="OPEN RISK" v={openR.toFixed(2)+'R'} s={'Limit '+settings.maxOpenR+'R'}/><Metric l="THIS MONTH" v={rFmt(stats.monthR)} s="Realized"/><Metric l="RULE SCORE" v={stats.adherence.toFixed(0)+'%'} s="Plan adherence"/><Metric l="EXPECTANCY" v={rFmt(stats.expectancy)} s="per trade"/><Metric l="MAX DRAWDOWN" v={rFmt(-stats.maxDD)} s="R"/></section>
+ <div className="grid2"><Card title="Process Gate" sub="ระบบตัดสินใจจากกฎ ไม่ใช่อารมณ์"><div className={calc.errors.length?'gate bad':'gate good'}><b>{todayR<=-settings.maxDailyR?'NO NEW TRADES':'READY'}</b><span>{todayR<=-settings.maxDailyR?'Daily loss limit reached':'Risk engine active'}</span></div><Rows rows={[['Closed trades',history.length],['Win rate',stats.winRate.toFixed(1)+'%'],['Profit factor',isFinite(stats.pf)?stats.pf.toFixed(2):'—'],['Behavioral cost',money(stats.behaviorCost)]]}/></Card>
+ <Card title="Scale Gate" sub="เพิ่ม Risk เมื่อข้อมูลอนุญาตเท่านั้น"><ScaleGate stats={stats} settings={settings}/></Card></div></>}
 
-  const account = accounts[trade.exchange] || DEFAULT_ACCOUNTS.Binance;
+ {view==='Plan'&&<div className="grid2"><Card title="New Trade Plan" sub="Plan ก่อน Order เสมอ"><div className="form">
+ <Field l="Symbol"><input value={trade.symbol} onChange={e=>setTrade({...trade,symbol:e.target.value})} placeholder="BTCUSDT"/></Field><Field l="Side"><select value={trade.side} onChange={e=>setTrade({...trade,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
+ <Field l="Setup"><select value={trade.setup} onChange={e=>setTrade({...trade,setup:e.target.value})}>{PLAYBOOK.map(x=><option key={x.id}>{x.id} {x.name}</option>)}</select></Field><Field l="Leverage"><input type="number" value={trade.leverage} onChange={e=>setTrade({...trade,leverage:e.target.value})}/></Field>
+ <Field l="Entry"><input type="number" value={trade.entry} onChange={e=>setTrade({...trade,entry:e.target.value})}/></Field><Field l="Stop Loss"><input type="number" value={trade.stop} onChange={e=>setTrade({...trade,stop:e.target.value})}/></Field><Field l="Take Profit"><input type="number" value={trade.target} onChange={e=>setTrade({...trade,target:e.target.value})}/></Field>
+ <Field l="Structure /20"><input type="number" min="0" max="20" value={trade.structure} onChange={e=>setTrade({...trade,structure:e.target.value})}/></Field><Field l="Confirmation /20"><input type="number" min="0" max="20" value={trade.confirmation} onChange={e=>setTrade({...trade,confirmation:e.target.value})}/></Field><Field l="Risk discipline /20"><input type="number" min="0" max="20" value={trade.riskScore} onChange={e=>setTrade({...trade,riskScore:e.target.value})}/></Field></div></Card>
+ <Card title="Pre-Trade Gate" sub="Risk first. Leverage only changes margin."><div className={'score '+(calc.score>=settings.minScore?'good':'bad')}><span>TRADE SCORE</span><b>{calc.score}/100</b></div><Rows rows={[['Risk budget',money(calc.risk)],['Position size',money(calc.size)],['Quantity',num(calc.qty,6)],['Margin @ '+trade.leverage+'x',money(calc.margin)],['Planned R:R',calc.rr.toFixed(2)+'R'],['Open risk after',(openR+(calc.e?1:0)).toFixed(2)+'R']]}/>{calc.errors.length>0&&<div className="errors">{calc.errors.map(x=><div key={x}>• {x}</div>)}</div>}<button className="primary" disabled={calc.errors.length>0} onClick={openTrade}>{calc.errors.length?'NO TRADE':'OPEN POSITION'}</button></Card></div>}
 
-  useEffect(() => {
-    setTrade(t => ({ ...t, leverage: accounts[t.exchange]?.leverage || 1, manualSize: '' }));
-  }, [accounts]);
+ {view==='Positions'&&<Card title="Ongoing Positions" sub="P&L แสดงเป็น R เพื่อรักษา process">{positions.length===0?<Empty/>:<div className="stack">{positions.map(p=>{const mark=marks[p.id]??'',dir=p.side==='Long'?1:-1,pnl=mark?(+mark-p.entry)*dir*p.qty:0,r=p.riskUsd?pnl/p.riskUsd:0;return <div className="position" key={p.id}><div><b>{p.symbol}</b><span className="pill">{p.side} · {p.setup}</span><small>Score {p.score} · Plan RR {p.rr.toFixed(2)}R</small></div><div className="posnums"><span>Entry<b>{num(p.entry)}</b></span><span>SL<b>{num(p.stop)}</b></span><span>TP<b>{num(p.target)}</b></span><span>Risk<b>{money(p.riskUsd)}</b></span></div><div><input type="number" placeholder="Current price" value={mark} onChange={e=>setMarks({...marks,[p.id]:e.target.value})}/><strong className={r>=0?'green':'red'}>{rFmt(r)} · {signedMoney(pnl)}</strong></div><button className="secondary" disabled={!+mark} onClick={()=>closeTrade(p)}>Close / Review</button></div>})}</div>}</Card>}
 
-  const calc = useMemo(() => {
-    const entry = Number(trade.entry) || 0;
-    const stop = Number(trade.stop) || 0;
-    const target = Number(trade.target) || 0;
-    const equity = Number(account.equity) || 0;
-    const plannedRisk = equity * (Number(account.riskPct) || 0) / 100;
-    const leverage = Math.max(1, Number(trade.leverage) || 1);
-    const distance = Math.abs(entry - stop);
-    const stopPct = entry ? distance / entry : 0;
-    const isXM = trade.exchange === 'XM';
-    const contractSize = Math.max(0.000001, Number(trade.contractSize) || 1);
+ {view==='Journal'&&<Card title="Journal" sub="แยก System Loss ออกจาก Trader Error">{history.length===0?<Empty/>:<Table history={history}/>}</Card>}
 
-    let autoSize = 0;
-    let actualSize = 0;
-    let qty = 0;
-    let actualRisk = 0;
-    let margin = 0;
+ {view==='Playbook'&&<div className="cards">{PLAYBOOK.map(p=>{const rows=history.filter(t=>t.setup?.startsWith(p.id)),s=calcStats(rows);return <Card key={p.id} title={p.id+' — '+p.name} sub={p.rules}><Rows rows={[['Trades',rows.length],['Win rate',s.winRate.toFixed(1)+'%'],['Expectancy',rFmt(s.expectancy)],['Profit factor',isFinite(s.pf)?s.pf.toFixed(2):'—']]}/></Card>})}</div>}
 
-    if (isXM) {
-      const riskPerLot = distance * contractSize;
-      autoSize = riskPerLot ? plannedRisk / riskPerLot : 0;
-      actualSize = trade.sizeMode === 'Manual' ? (Number(trade.manualSize) || 0) : autoSize;
-      qty = actualSize;
-      actualRisk = riskPerLot * actualSize;
-      margin = entry && actualSize ? entry * contractSize * actualSize / leverage : 0;
-    } else {
-      autoSize = stopPct ? plannedRisk / stopPct : 0; // USDT notional
-      actualSize = trade.sizeMode === 'Manual' ? (Number(trade.manualSize) || 0) : autoSize;
-      qty = entry ? actualSize / entry : 0;
-      actualRisk = actualSize * stopPct;
-      margin = actualSize / leverage;
-    }
+ {view==='Analytics'&&<div className="grid2"><Card title="Edge Analytics" sub="Strategy problem หรือ Execution problem?"><Rows rows={[['Trades',history.length],['Expectancy',rFmt(stats.expectancy)],['Profit factor',isFinite(stats.pf)?stats.pf.toFixed(2):'—'],['Win rate',stats.winRate.toFixed(1)+'%'],['Avg win',rFmt(stats.avgWin)],['Avg loss',rFmt(stats.avgLoss)]]}/></Card><Card title="Behavioral Cost" sub="ต้นทุนจากการไม่ทำตามแผน"><div className="big">{money(stats.behaviorCost)}</div><p className="muted">Rule adherence {stats.adherence.toFixed(1)}% · เป้าหมายคือทำให้ execution ใกล้ system มากขึ้น ไม่ใช่บังคับให้ทุก trade ชนะ</p></Card></div>}
 
-    const rr = distance ? Math.abs(target - entry) / distance : 0;
-    const openRisk = positions
-      .filter(p => p.exchange === trade.exchange)
-      .reduce((s, p) => s + Number(p.riskUsd || 0), 0);
-    const afterRisk = openRisk + actualRisk;
-    const afterRiskPct = equity ? afterRisk / equity * 100 : 0;
+ {view==='Scale'&&<Card title="Controlled Scaling" sub="Risk เพิ่มทีละขั้นเมื่อผ่าน Data Gate"><ScaleGate stats={stats} settings={settings}/><div className="levels"><div><b>LEVEL 1</b><strong>0.50%</strong></div><div><b>LEVEL 2</b><strong>0.75%</strong></div><div><b>LEVEL 3</b><strong>1.00%</strong></div></div></Card>}
 
-    const errors = [];
-    if (!trade.symbol) errors.push('ใส่ Symbol');
-    if (!entry || !stop || !target) errors.push('ใส่ Entry / SL / TP ให้ครบ');
-    if (trade.side === 'Long' && entry && stop && stop >= entry) errors.push('Long ต้องมี SL ต่ำกว่า Entry');
-    if (trade.side === 'Long' && entry && target && target <= entry) errors.push('Long ต้องมี TP สูงกว่า Entry');
-    if (trade.side === 'Short' && entry && stop && stop <= entry) errors.push('Short ต้องมี SL สูงกว่า Entry');
-    if (trade.side === 'Short' && entry && target && target >= entry) errors.push('Short ต้องมี TP ต่ำกว่า Entry');
-    if (trade.sizeMode === 'Manual' && !actualSize) errors.push('ใส่ Position Size');
-    if (afterRiskPct > Number(account.maxRiskPct)) errors.push('Portfolio Risk เกิน Max Risk');
-
-    return { entry, stop, target, plannedRisk, stopPct, autoSize, actualSize, qty, actualRisk, margin, rr, openRisk, afterRiskPct, leverage, errors };
-  }, [trade, account, positions]);
-
-  const selectedPositions = positions.filter(p => p.exchange === trade.exchange);
-  const accountOpenRisk = selectedPositions.reduce((s, p) => s + Number(p.riskUsd || 0), 0);
-  const accountRiskPct = Number(account.equity) ? accountOpenRisk / Number(account.equity) * 100 : 0;
-  const unrealized = selectedPositions.reduce((sum, p) => sum + unrealizedPnl(p, marks[p.id]), 0);
-
-  function changeExchange(exchange) {
-    const a = accounts[exchange];
-    setTrade({ ...EMPTY_TRADE, exchange, leverage: a?.leverage || 1, contractSize: exchange === 'XM' ? 100 : 1 });
-  }
-
-  function addPosition() {
-    if (calc.errors.length) return;
-    const p = {
-      id: crypto.randomUUID(), exchange: trade.exchange, symbol: trade.symbol.toUpperCase(), side: trade.side,
-      entry: calc.entry, stop: calc.stop, target: calc.target, leverage: calc.leverage,
-      positionSize: calc.actualSize, qty: calc.qty, riskUsd: calc.actualRisk, rr: calc.rr,
-      contractSize: Number(trade.contractSize) || 1, openedAt: new Date().toISOString(),
-    };
-    setPositions(v => [p, ...v]);
-    setMarks(m => ({ ...m, [p.id]: calc.entry }));
-    const ex = trade.exchange;
-    setTrade({ ...EMPTY_TRADE, exchange: ex, leverage: accounts[ex]?.leverage || 1, contractSize: ex === 'XM' ? 100 : 1 });
-    setView('Positions');
-  }
-
-  function closePosition(p) {
-    const exit = Number(marks[p.id]);
-    if (!exit) return;
-    const pnl = pnlAtPrice(p, exit);
-    const r = p.riskUsd ? pnl / p.riskUsd : 0;
-    const reason = window.prompt('Close reason: TP / SL / Early / Manual', 'Manual') || 'Manual';
-    const row = { ...p, exit, pnl, r, reason, closedAt: new Date().toISOString() };
-    setHistory(v => [row, ...v]);
-    setPositions(v => v.filter(x => x.id !== p.id));
-    setMarks(m => { const n = { ...m }; delete n[p.id]; return n; });
-  }
-
-  return <main className="shell">
-    <header className="top">
-      <div><div className="brand">NØS RISK DESK</div><h1>Trading Cockpit</h1><p>คำนวณ Size → เช็ก Risk → เปิด Position → ติดตาม → ปิด</p></div>
-      <nav>{['Trade','Positions','History','Settings'].map(x => <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
-    </header>
-
-    <div className="accountTabs">
-      {Object.keys(accounts).map(ex => <button key={ex} className={trade.exchange===ex?'selected':''} onClick={()=>changeExchange(ex)}>{ex}<small>${Number(accounts[ex].equity||0).toLocaleString()}</small></button>)}
-    </div>
-
-    <section className="metrics">
-      <Metric label="Account Equity" value={usd(account.equity)} />
-      <Metric label="Open Risk" value={usd(accountOpenRisk)} sub={`${accountRiskPct.toFixed(2)}%`} />
-      <Metric label="Unrealized P&L" value={signedUsd(unrealized)} tone={unrealized>0?'good':unrealized<0?'bad':''} />
-      <Metric label="Open Positions" value={selectedPositions.length} />
-    </section>
-
-    {view==='Trade' && <section className="layout">
-      <div className="card">
-        <div className="cardHead"><h2>New Trade</h2><p>กรอกเฉพาะข้อมูลที่มีอยู่ใน order ticket</p></div>
-        <div className="form">
-          <Field label="Symbol"><input value={trade.symbol} onChange={e=>setTrade({...trade,symbol:e.target.value})} placeholder={trade.exchange==='XM'?'XAUUSD':'BTCUSDT'} /></Field>
-          <Field label="Side"><select value={trade.side} onChange={e=>setTrade({...trade,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
-          <Field label="Entry"><input type="number" value={trade.entry} onChange={e=>setTrade({...trade,entry:e.target.value})} /></Field>
-          <Field label="Stop Loss"><input type="number" value={trade.stop} onChange={e=>setTrade({...trade,stop:e.target.value})} /></Field>
-          <Field label="Take Profit"><input type="number" value={trade.target} onChange={e=>setTrade({...trade,target:e.target.value})} /></Field>
-          <Field label="Leverage"><input type="number" min="1" value={trade.leverage} onChange={e=>setTrade({...trade,leverage:e.target.value})} /></Field>
-          {trade.exchange==='XM' && <Field label="Contract Size / 1 Lot"><input type="number" value={trade.contractSize} onChange={e=>setTrade({...trade,contractSize:e.target.value})} /></Field>}
-          <Field label="Sizing"><select value={trade.sizeMode} onChange={e=>setTrade({...trade,sizeMode:e.target.value,manualSize:''})}><option>Auto</option><option>Manual</option></select></Field>
-          {trade.sizeMode==='Manual' && <Field label={trade.exchange==='XM'?'Position Size (Lot)':'Position Size (USDT)'}><input type="number" value={trade.manualSize} onChange={e=>setTrade({...trade,manualSize:e.target.value})} /></Field>}
-        </div>
-      </div>
-
-      <div className="card result">
-        <div className="cardHead"><h2>Risk Check</h2><p>{account.riskPct}% risk per trade · max portfolio {account.maxRiskPct}%</p></div>
-        <Result label="Risk Budget" value={usd(calc.plannedRisk)} />
-        <Result label="SL Distance" value={`${(calc.stopPct*100).toFixed(2)}%`} />
-        <Result label={trade.exchange==='XM'?'Position Size':'Position Size'} value={trade.exchange==='XM'?`${fmt(calc.actualSize,3)} lot`:usd(calc.actualSize)} strong />
-        {trade.exchange!=='XM' && <Result label="Quantity" value={fmt(calc.qty,6)} />}
-        <Result label="Leverage" value={`${calc.leverage}x`} />
-        <Result label="Margin Required" value={usd(calc.margin)} />
-        <Result label="Actual Risk at SL" value={`${usd(calc.actualRisk)} · ${account.equity ? (calc.actualRisk/account.equity*100).toFixed(2) : '0.00'}%`} />
-        <Result label="Planned R:R" value={`${calc.rr.toFixed(2)}R`} />
-        <Result label="Portfolio Risk After" value={`${calc.afterRiskPct.toFixed(2)}%`} />
-        {calc.errors.length>0 && <div className="errors">{calc.errors.map(x=><div key={x}>• {x}</div>)}</div>}
-        <button className="openBtn" disabled={calc.errors.length>0} onClick={addPosition}>OPEN POSITION</button>
-      </div>
-    </section>}
-
-    {view==='Positions' && <section className="card">
-      <div className="cardHead"><h2>Active Positions — {trade.exchange}</h2><p>ใส่ Current Price เพื่อดู P&L และใช้ราคานั้นปิด Position</p></div>
-      {selectedPositions.length===0 ? <Empty/> : <div className="positionList">{selectedPositions.map(p => {
-        const mark = marks[p.id] ?? '';
-        const pnl = unrealizedPnl(p, mark);
-        return <div className="pos" key={p.id}>
-          <div className="posTitle"><b>{p.symbol}</b><span className={p.side==='Long'?'long':'short'}>{p.side}</span><small>{p.leverage}x</small></div>
-          <div className="posData"><span>Entry<b>{fmt(p.entry,6)}</b></span><span>SL<b>{fmt(p.stop,6)}</b></span><span>TP<b>{fmt(p.target,6)}</b></span><span>Size<b>{p.exchange==='XM'?`${fmt(p.positionSize,3)} lot`:usd(p.positionSize)}</b></span><span>Risk<b>{usd(p.riskUsd)}</b></span></div>
-          <div className="markBox"><label>Current Price</label><input type="number" value={mark} onChange={e=>setMarks({...marks,[p.id]:e.target.value})}/><strong className={pnl>0?'goodText':pnl<0?'badText':''}>{signedUsd(pnl)}</strong></div>
-          <button className="closeBtn" disabled={!Number(mark)} onClick={()=>closePosition(p)}>Close @ Current</button>
-        </div>
-      })}</div>}
-    </section>}
-
-    {view==='History' && <section className="card">
-      <div className="cardHead"><h2>History</h2><p>Closed trades</p></div>
-      {history.length===0 ? <Empty/> : <div className="tableWrap"><table><thead><tr><th>Date</th><th>Exchange</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th></tr></thead><tbody>{history.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td>{t.exchange}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${fmt(t.positionSize,3)} lot`:usd(t.positionSize)}</td><td>{t.leverage}x</td><td className={t.pnl>=0?'goodText':'badText'}>{signedUsd(t.pnl)}</td><td>{Number(t.r||0).toFixed(2)}R</td><td>{t.reason}</td></tr>)}</tbody></table></div>}
-    </section>}
-
-    {view==='Settings' && <section className="card">
-      <div className="cardHead"><h2>Account Risk Settings</h2><p>ตั้ง Balance และ Guardrail แยกแต่ละพอร์ต</p></div>
-      <div className="settingsGrid">{Object.entries(accounts).map(([ex,a])=><div className="accountCard" key={ex}><h3>{ex}</h3>
-        <Field label="Equity ($)"><input type="number" value={a.equity} onChange={e=>setAccounts({...accounts,[ex]:{...a,equity:Number(e.target.value)}})} /></Field>
-        <Field label="Risk / Trade %"><input type="number" step="0.1" value={a.riskPct} onChange={e=>setAccounts({...accounts,[ex]:{...a,riskPct:Number(e.target.value)}})} /></Field>
-        <Field label="Max Portfolio Risk %"><input type="number" step="0.1" value={a.maxRiskPct} onChange={e=>setAccounts({...accounts,[ex]:{...a,maxRiskPct:Number(e.target.value)}})} /></Field>
-        <Field label="Default Leverage"><input type="number" value={a.leverage} onChange={e=>setAccounts({...accounts,[ex]:{...a,leverage:Number(e.target.value)}})} /></Field>
-      </div>)}</div>
-    </section>}
-  </main>
+ {view==='Settings'&&<Card title="Risk Engine Settings" sub="Guardrails ของระบบ"><div className="form">{Object.entries({equity:'Account Equity ($)',riskPct:'Risk / Trade %',maxDailyR:'Max Daily Loss (R)',maxWeeklyR:'Max Weekly Loss (R)',maxOpenR:'Max Open Risk (R)',minScore:'Minimum Trade Score',minRR:'Minimum R:R',scaleTrades:'Scale: Min Trades',scalePF:'Scale: Min Profit Factor',scaleAdherence:'Scale: Rule Adherence %',scaleDD:'Scale: Max DD (R)'}).map(([k,l])=><Field key={k} l={l}><input type="number" step=".1" value={settings[k]} onChange={e=>setSettings({...settings,[k]:+e.target.value})}/></Field>)}</div></Card>}
+ </main>
 }
 
-function pnlAtPrice(p, price) {
-  const px = Number(price) || 0;
-  if (!px) return 0;
-  const dir = p.side === 'Long' ? 1 : -1;
-  if (p.exchange === 'XM') return (px - p.entry) * dir * Number(p.contractSize || 1) * Number(p.positionSize || 0);
-  return (px - p.entry) * dir * Number(p.qty || 0);
-}
-function unrealizedPnl(p, price){ return pnlAtPrice(p, price); }
-function usd(n){ return `$${Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}`; }
-function signedUsd(n){ const x=Number(n||0); return `${x>0?'+':x<0?'−':''}$${Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:2})}`; }
-function fmt(n,d=2){ return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d}); }
-function Metric({label,value,sub,tone=''}){return <div className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong>{sub&&<small>{sub}</small>}</div>}
-function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
-function Result({label,value,strong=false}){return <div className={`resultRow ${strong?'strong':''}`}><span>{label}</span><b>{value}</b></div>}
-function Empty(){return <div className="empty">ยังไม่มีข้อมูล</div>}
+function calcStats(h){const rs=h.map(t=>+t.r||0),wins=rs.filter(x=>x>0),loss=rs.filter(x=>x<0),grossW=wins.reduce((a,b)=>a+b,0),grossL=Math.abs(loss.reduce((a,b)=>a+b,0)),expectancy=rs.length?rs.reduce((a,b)=>a+b,0)/rs.length:0;let peak=0,cum=0,maxDD=0;rs.slice().reverse().forEach(r=>{cum+=r;peak=Math.max(peak,cum);maxDD=Math.max(maxDD,peak-cum)});const now=new Date(),month=h.filter(t=>{const d=new Date(t.closedAt);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()}).reduce((s,t)=>s+(+t.r||0),0);const followed=h.filter(t=>t.followed).length;return{count:h.length,trades:h.length,winRate:rs.length?wins.length/rs.length*100:0,pf:grossL?grossW/grossL:(grossW?Infinity:0),expectancy,avgWin:wins.length?grossW/wins.length:0,avgLoss:loss.length?-grossL/loss.length:0,maxDD,monthR:month,adherence:h.length?followed/h.length*100:100,behaviorCost:h.filter(t=>!t.followed).reduce((s,t)=>s+Math.abs(Math.min(0,+t.pnl||0)),0)}}
+function ScaleGate({stats,settings}){const gates=[['Sample size',stats?undefined:0],['Trades',stats?stats:null]];const checks=[['Trades',stats&&stats.trades,settings.scaleTrades]];const passTrades=(stats?.count||0)>=settings.scaleTrades;const items=[['50+ trades',passTrades],['Positive expectancy',(stats?.expectancy||0)>.2],['Profit Factor ≥ '+settings.scalePF,(stats?.pf||0)>=settings.scalePF],['Rule adherence ≥ '+settings.scaleAdherence+'%',(stats?.adherence||0)>=settings.scaleAdherence],['Max DD ≤ '+settings.scaleDD+'R',(stats?.maxDD||0)<=settings.scaleDD]];const pass=items.every(x=>x[1]);return <><div className={'gate '+(pass?'good':'bad')}><b>{pass?'SCALE ALLOWED':'HOLD SIZE'}</b><span>{pass?'Data gate passed':'Keep current risk'}</span></div><div className="checklist">{items.map(([x,y])=><div key={x}><span>{y?'✓':'○'}</span>{x}</div>)}</div></>}
+function Card({title,sub,children}){return <section className="card"><div className="cardhead"><h2>{title}</h2><p>{sub}</p></div>{children}</section>}
+function Metric({l,v,s}){return <div className="metric"><span>{l}</span><b>{v}</b><small>{s}</small></div>}
+function Field({l,children}){return <label className="field"><span>{l}</span>{children}</label>}
+function Rows({rows}){return <div className="rows">{rows.map(([a,b])=><div key={a}><span>{a}</span><b>{b}</b></div>)}</div>}
+function Table({history}){return <div className="table"><table><thead><tr><th>Date</th><th>Symbol</th><th>Setup</th><th>R</th><th>P&L</th><th>Plan?</th><th>Emotion</th><th>Mistake</th></tr></thead><tbody>{history.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td>{t.symbol}</td><td>{t.setup}</td><td>{rFmt(t.r)}</td><td>{signedMoney(t.pnl)}</td><td>{t.followed?'YES':'NO'}</td><td>{t.emotion}</td><td>{t.mistake}</td></tr>)}</tbody></table></div>}
+function Empty(){return <div className="empty">ยังไม่มีข้อมูล — เริ่มจาก Plan</div>}
+function money(n){return '$'+Number(n||0).toLocaleString(undefined,{maximumFractionDigits:2})}function signedMoney(n){const x=+n||0;return (x>0?'+':x<0?'−':'')+'$'+Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:2})}function rFmt(n){const x=+n||0;return (x>0?'+':'')+x.toFixed(2)+'R'}function num(n,d=2){return Number(n||0).toLocaleString(undefined,{maximumFractionDigits:d})}
