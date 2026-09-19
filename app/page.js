@@ -135,8 +135,8 @@ export default function Home() {
 
   return <main className="shell">
     <header className="top">
-      <div><div className="brand">NØS RISK DESK</div><h1>Trading Cockpit</h1><p>คำนวณ Size → เช็ก Risk → เปิด Position → ติดตาม → ปิด</p></div>
-      <nav>{['Trade','Positions','History','Settings'].map(x => <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
+      <div><div className="brand">NØS TRADING OS</div><h1>Trading Operating System</h1><p>PLAN → VALIDATE → SIZE → EXECUTE → MANAGE → REVIEW</p></div>
+      <nav>{['Trade','Positions','History','Playbook','Rules','Settings'].map(x => <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
     </header>
 
     <div className="accountTabs">
@@ -201,6 +201,8 @@ export default function Home() {
       {history.length===0 ? <Empty/> : <div className="tableWrap"><table><thead><tr><th>Date</th><th>Exchange</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th></tr></thead><tbody>{history.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td>{t.exchange}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${fmt(t.positionSize,3)} lot`:usd(t.positionSize)}</td><td>{t.leverage}x</td><td className={t.pnl>=0?'goodText':'badText'}>{signedUsd(t.pnl)}</td><td>{Number(t.r||0).toFixed(2)}R</td><td>{t.reason}</td></tr>)}</tbody></table></div>}
     </section>}
 
+    {view==='Playbook' && <section className="layout"><div className="card"><div className="cardHead"><h2>Playbook</h2><p>Trade only repeatable setups. Data decides what has edge.</p></div><div className="positionList"><div className="pos"><div className="posTitle"><b>A1 — Trend Continuation</b><span className="long">PRIMARY</span></div><p>HTF trend aligned · pullback · liquidity/trigger · minimum R:R 2.5</p></div><div className="pos"><div className="posTitle"><b>A2 — Reversal</b></div><p>HTF level · sweep · displacement · confirmation · minimum R:R 2.0</p></div><div className="pos"><div className="posTitle"><b>B1 — Breakout</b></div><p>Compression · clean level · acceptance · retest. Promote only after positive sample.</p></div></div></div><div className="card result"><div className="cardHead"><h2>Scale Gate</h2><p>Size increases only when data permits it.</p></div><Result label="Minimum sample" value="50 trades"/><Result label="Expectancy" value="> +0.20R"/><Result label="Profit Factor" value="> 1.30"/><Result label="Rule Adherence" value="≥ 90%"/><Result label="Scaling" value="0.50% → 0.75% → 1.00%" strong/></div></section>}
+    {view==='Rules' && <section className="layout"><div className="card"><div className="cardHead"><h2>Hard Guardrails</h2><p>Protect process before P&L.</p></div><Result label="Max Risk / Trade" value="0.75%"/><Result label="Max Daily Loss" value="2R"/><Result label="Max Weekly Loss" value="5R"/><Result label="Max Open Risk" value="2.5R"/><Result label="Minimum R:R" value="2R"/></div><div className="card"><div className="cardHead"><h2>Execution Protocol</h2></div><p>1. PLAN — define thesis and invalidation.</p><p>2. VALIDATE — setup must match playbook.</p><p>3. SIZE — risk first; leverage never defines risk.</p><p>4. EXECUTE — trigger only, no FOMO entry.</p><p>5. REVIEW — separate system loss from trader error.</p><p>6. SCALE — only after statistical gate.</p></div></section>}
     {view==='Settings' && <section className="card">
       <div className="cardHead"><h2>Account Risk Settings</h2><p>ตั้ง Balance และ Guardrail แยกแต่ละพอร์ต</p></div>
       <div className="settingsGrid">{Object.entries(accounts).map(([ex,a])=><div className="accountCard" key={ex}><h3>{ex}</h3>
