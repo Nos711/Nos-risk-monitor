@@ -8,9 +8,15 @@ const DEFAULT_ACCOUNTS = {
   XM: { equity: 10000, riskPct: 1, maxRiskPct: 3, leverage: 100 },
 };
 
+const PLAYBOOKS = {
+  'A1 Trend Continuation': { regimes:['Trending'], minRR:2.5, checks:['HTF trend aligned','Structure aligned with bias','Pullback into planned zone','Liquidity sweep / trigger','Entry confirmation','Invalidation is clear','No FOMO / chase'] },
+  'A2 Reversal': { regimes:['Trending','Ranging'], minRR:2, checks:['HTF key level reached','Liquidity sweep','Displacement / rejection','Structure shift confirmed','Entry confirmation','Invalidation is clear','No FOMO / chase'] },
+  'B1 Breakout': { regimes:['Trending','High Volatility'], minRR:2, checks:['Clean compression / level','Break with acceptance','Volume / momentum confirms','Retest or defined trigger','Invalidation is clear','Not entering extended candle','No FOMO / chase'] },
+};
 const EMPTY_TRADE = {
-  exchange: 'Binance', symbol: '', side: 'Long', entry: '', stop: '', target: '',
-  leverage: 10, sizeMode: 'Auto', manualSize: '', contractSize: 100,
+  exchange:'Binance', symbol:'', side:'Long', entry:'', stop:'', target:'',
+  leverage:10, sizeMode:'Auto', manualSize:'', contractSize:100,
+  regime:'Trending', setup:'A1 Trend Continuation', checks:{},
 };
 
 export default function Home() {
@@ -92,6 +98,12 @@ export default function Home() {
     if (trade.side === 'Short' && entry && target && target >= entry) errors.push('Short ต้องมี TP ต่ำกว่า Entry');
     if (trade.sizeMode === 'Manual' && !actualSize) errors.push('ใส่ Position Size');
     if (afterRiskPct > Number(account.maxRiskPct)) errors.push('Portfolio Risk เกิน Max Risk');
+    const pb = PLAYBOOKS[trade.setup];
+    const checklistPass = pb ? pb.checks.every((_,i)=>trade.checks?.[i]) : false;
+    const regimePass = pb ? pb.regimes.includes(trade.regime) : false;
+    if (!regimePass) errors.push('Strategy ไม่เหมาะกับ Market Regime นี้');
+    if (!checklistPass) errors.push('Mandatory Playbook Checklist ยังไม่ครบ');
+    if (pb && rr < pb.minRR) errors.push(`R:R ต่ำกว่า Playbook minimum ${pb.minRR}R`);
 
     return { entry, stop, target, plannedRisk, stopPct, autoSize, actualSize, qty, actualRisk, margin, rr, openRisk, afterRiskPct, leverage, errors };
   }, [trade, account, positions]);
@@ -112,6 +124,7 @@ export default function Home() {
       id: crypto.randomUUID(), exchange: trade.exchange, symbol: trade.symbol.toUpperCase(), side: trade.side,
       entry: calc.entry, stop: calc.stop, target: calc.target, leverage: calc.leverage,
       positionSize: calc.actualSize, qty: calc.qty, riskUsd: calc.actualRisk, rr: calc.rr,
+      regime: trade.regime, setup: trade.setup, checklistPassed: true,
       contractSize: Number(trade.contractSize) || 1, openedAt: new Date().toISOString(),
     };
     setPositions(v => [p, ...v]);
@@ -127,7 +140,13 @@ export default function Home() {
     const pnl = pnlAtPrice(p, exit);
     const r = p.riskUsd ? pnl / p.riskUsd : 0;
     const reason = window.prompt('Close reason: TP / SL / Early / Manual', 'Manual') || 'Manual';
-    const row = { ...p, exit, pnl, r, reason, closedAt: new Date().toISOString() };
+    const followed = window.confirm('Did you follow the original plan? OK = Yes / Cancel = No');
+    const emotion = window.prompt('Emotion: Calm / FOMO / Fear / Revenge / Greed', 'Calm') || 'Calm';
+    const mistake = followed ? 'None' : (window.prompt('Mistake: Early Entry / Early Exit / Oversize / Moved SL / No Setup', 'Early Exit') || 'Rule violation');
+    const systemRRaw = window.prompt('If the original plan was followed exactly, what would the result be in R? (optional)', String(Number(r).toFixed(2)));
+    const systemR = Number(systemRRaw);
+    const behavioralCost = Number.isFinite(systemR) ? systemR - r : 0;
+    const row = { ...p, exit, pnl, r, reason, followed, emotion, mistake, systemR, behavioralCost, closedAt: new Date().toISOString() };
     setHistory(v => [row, ...v]);
     setPositions(v => v.filter(x => x.id !== p.id));
     setMarks(m => { const n = { ...m }; delete n[p.id]; return n; });
@@ -154,6 +173,8 @@ export default function Home() {
       <div className="card">
         <div className="cardHead"><h2>New Trade</h2><p>กรอกเฉพาะข้อมูลที่มีอยู่ใน order ticket</p></div>
         <div className="form">
+          <Field label="Market Regime"><select value={trade.regime} onChange={e=>setTrade({...trade,regime:e.target.value,checks:{}})}><option>Trending</option><option>Ranging</option><option>High Volatility</option><option>Event-driven</option></select></Field>
+          <Field label="Strategy"><select value={trade.setup} onChange={e=>setTrade({...trade,setup:e.target.value,checks:{}})}>{Object.keys(PLAYBOOKS).map(x=><option key={x}>{x}</option>)}</select></Field>
           <Field label="Symbol"><input value={trade.symbol} onChange={e=>setTrade({...trade,symbol:e.target.value})} placeholder={trade.exchange==='XM'?'XAUUSD':'BTCUSDT'} /></Field>
           <Field label="Side"><select value={trade.side} onChange={e=>setTrade({...trade,side:e.target.value})}><option>Long</option><option>Short</option></select></Field>
           <Field label="Entry"><input type="number" value={trade.entry} onChange={e=>setTrade({...trade,entry:e.target.value})} /></Field>
@@ -167,6 +188,8 @@ export default function Home() {
       </div>
 
       <div className="card result">
+        <div className="cardHead"><h2>Trade Gate</h2><p>{trade.setup} · {trade.regime}</p></div>
+        <div className="checklist">{PLAYBOOKS[trade.setup].checks.map((x,i)=><label className="check" key={x}><input type="checkbox" checked={!!trade.checks?.[i]} onChange={e=>setTrade({...trade,checks:{...trade.checks,[i]:e.target.checked}})} /><span>{x}</span></label>)}</div>
         <div className="cardHead"><h2>Risk Check</h2><p>{account.riskPct}% risk per trade · max portfolio {account.maxRiskPct}%</p></div>
         <Result label="Risk Budget" value={usd(calc.plannedRisk)} />
         <Result label="SL Distance" value={`${(calc.stopPct*100).toFixed(2)}%`} />
@@ -201,7 +224,7 @@ export default function Home() {
       {history.length===0 ? <Empty/> : <div className="tableWrap"><table><thead><tr><th>Date</th><th>Exchange</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th></tr></thead><tbody>{history.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td>{t.exchange}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${fmt(t.positionSize,3)} lot`:usd(t.positionSize)}</td><td>{t.leverage}x</td><td className={t.pnl>=0?'goodText':'badText'}>{signedUsd(t.pnl)}</td><td>{Number(t.r||0).toFixed(2)}R</td><td>{t.reason}</td></tr>)}</tbody></table></div>}
     </section>}
 
-    {view==='Playbook' && <section className="layout"><div className="card"><div className="cardHead"><h2>Playbook</h2><p>Trade only repeatable setups. Data decides what has edge.</p></div><div className="positionList"><div className="pos"><div className="posTitle"><b>A1 — Trend Continuation</b><span className="long">PRIMARY</span></div><p>HTF trend aligned · pullback · liquidity/trigger · minimum R:R 2.5</p></div><div className="pos"><div className="posTitle"><b>A2 — Reversal</b></div><p>HTF level · sweep · displacement · confirmation · minimum R:R 2.0</p></div><div className="pos"><div className="posTitle"><b>B1 — Breakout</b></div><p>Compression · clean level · acceptance · retest. Promote only after positive sample.</p></div></div></div><div className="card result"><div className="cardHead"><h2>Scale Gate</h2><p>Size increases only when data permits it.</p></div><Result label="Minimum sample" value="50 trades"/><Result label="Expectancy" value="> +0.20R"/><Result label="Profit Factor" value="> 1.30"/><Result label="Rule Adherence" value="≥ 90%"/><Result label="Scaling" value="0.50% → 0.75% → 1.00%" strong/></div></section>}
+    {view==='Playbook' && <section className="layout"><div className="card"><div className="cardHead"><h2>Strategy Playbook</h2><p>Mandatory checklist — one missing hard condition = NO TRADE.</p></div>{Object.entries(PLAYBOOKS).map(([name,pb])=><div className="playCard" key={name}><div className="posTitle"><b>{name}</b><span>{pb.regimes.join(' / ')}</span></div><p>Minimum R:R <b>{pb.minRR}R</b></p>{pb.checks.map(x=><div className="ruleLine" key={x}>□ {x}</div>)}<p className="muted">Stats: {history.filter(h=>h.setup===name).length} logged trades · {strategyExpectancy(history,name)}</p></div>)}</div><div className="card result"><div className="cardHead"><h2>Scale Gate</h2><p>Size increases only when data permits it.</p></div><Result label="Minimum sample" value="50 trades"/><Result label="Expectancy" value="> +0.20R"/><Result label="Profit Factor" value="> 1.30"/><Result label="Rule Adherence" value="≥ 90%"/><Result label="Scaling" value="0.50% → 0.75% → 1.00%" strong/></div></section>}
     {view==='Rules' && <section className="layout"><div className="card"><div className="cardHead"><h2>Hard Guardrails</h2><p>Protect process before P&L.</p></div><Result label="Max Risk / Trade" value="0.75%"/><Result label="Max Daily Loss" value="2R"/><Result label="Max Weekly Loss" value="5R"/><Result label="Max Open Risk" value="2.5R"/><Result label="Minimum R:R" value="2R"/></div><div className="card"><div className="cardHead"><h2>Execution Protocol</h2></div><p>1. PLAN — define thesis and invalidation.</p><p>2. VALIDATE — setup must match playbook.</p><p>3. SIZE — risk first; leverage never defines risk.</p><p>4. EXECUTE — trigger only, no FOMO entry.</p><p>5. REVIEW — separate system loss from trader error.</p><p>6. SCALE — only after statistical gate.</p></div></section>}
     {view==='Settings' && <section className="card">
       <div className="cardHead"><h2>Account Risk Settings</h2><p>ตั้ง Balance และ Guardrail แยกแต่ละพอร์ต</p></div>
@@ -230,3 +253,4 @@ function Metric({label,value,sub,tone=''}){return <div className={`metric ${tone
 function Field({label,children}){return <label className="field"><span>{label}</span>{children}</label>}
 function Result({label,value,strong=false}){return <div className={`resultRow ${strong?'strong':''}`}><span>{label}</span><b>{value}</b></div>}
 function Empty(){return <div className="empty">ยังไม่มีข้อมูล</div>}
+function strategyExpectancy(history,name){const a=history.filter(x=>x.setup===name);if(!a.length)return 'No sample yet';const e=a.reduce((s,x)=>s+Number(x.r||0),0)/a.length;return `Expectancy ${e>=0?'+':''}${e.toFixed(2)}R`;}
