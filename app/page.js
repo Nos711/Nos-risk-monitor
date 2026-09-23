@@ -155,7 +155,7 @@ export default function Home() {
   return <main className="shell">
     <header className="top">
       <div><div className="brand">NØS TRADING OS</div><h1>Trading Operating System</h1><p>PLAN → VALIDATE → SIZE → EXECUTE → MANAGE → REVIEW</p></div>
-      <nav>{['Trade','Positions','History','Playbook','Rules','Settings'].map(x => <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
+      <nav>{['Trade','Positions','History','Management Lab','Playbook','Rules','Settings'].map(x => <button key={x} className={view===x?'active':''} onClick={()=>setView(x)}>{x}</button>)}</nav>
     </header>
 
     <div className="accountTabs">
@@ -224,6 +224,8 @@ export default function Home() {
       {history.length===0 ? <Empty/> : <div className="tableWrap"><table><thead><tr><th>Date</th><th>Exchange</th><th>Symbol</th><th>Side</th><th>Size</th><th>Lev.</th><th>P&L</th><th>R</th><th>Reason</th></tr></thead><tbody>{history.map(t=><tr key={t.id}><td>{new Date(t.closedAt).toLocaleDateString()}</td><td>{t.exchange}</td><td><b>{t.symbol}</b></td><td>{t.side}</td><td>{t.exchange==='XM'?`${fmt(t.positionSize,3)} lot`:usd(t.positionSize)}</td><td>{t.leverage}x</td><td className={t.pnl>=0?'goodText':'badText'}>{signedUsd(t.pnl)}</td><td>{Number(t.r||0).toFixed(2)}R</td><td>{t.reason}</td></tr>)}</tbody></table></div>}
     </section>}
 
+    {view==='Management Lab' && <ManagementLab history={history} setHistory={setHistory} />}
+
     {view==='Playbook' && <section className="layout"><div className="card"><div className="cardHead"><h2>Strategy Playbook</h2><p>Mandatory checklist — one missing hard condition = NO TRADE.</p></div>{Object.entries(PLAYBOOKS).map(([name,pb])=><div className="playCard" key={name}><div className="posTitle"><b>{name}</b><span>{pb.regimes.join(' / ')}</span></div><p>Minimum R:R <b>{pb.minRR}R</b></p>{pb.checks.map(x=><div className="ruleLine" key={x}>□ {x}</div>)}<p className="muted">Stats: {history.filter(h=>h.setup===name).length} logged trades · {strategyExpectancy(history,name)}</p></div>)}</div><div className="card result"><div className="cardHead"><h2>Scale Gate</h2><p>Size increases only when data permits it.</p></div><Result label="Minimum sample" value="50 trades"/><Result label="Expectancy" value="> +0.20R"/><Result label="Profit Factor" value="> 1.30"/><Result label="Rule Adherence" value="≥ 90%"/><Result label="Scaling" value="0.50% → 0.75% → 1.00%" strong/></div></section>}
     {view==='Rules' && <section className="layout"><div className="card"><div className="cardHead"><h2>Hard Guardrails</h2><p>Protect process before P&L.</p></div><Result label="Max Risk / Trade" value="0.75%"/><Result label="Max Daily Loss" value="2R"/><Result label="Max Weekly Loss" value="5R"/><Result label="Max Open Risk" value="2.5R"/><Result label="Minimum R:R" value="2R"/></div><div className="card"><div className="cardHead"><h2>Execution Protocol</h2></div><p>1. PLAN — define thesis and invalidation.</p><p>2. VALIDATE — setup must match playbook.</p><p>3. SIZE — risk first; leverage never defines risk.</p><p>4. EXECUTE — trigger only, no FOMO entry.</p><p>5. REVIEW — separate system loss from trader error.</p><p>6. SCALE — only after statistical gate.</p></div></section>}
     {view==='Settings' && <section className="card">
@@ -254,3 +256,82 @@ function Field({label,children}){return <label className="field"><span>{label}</
 function Result({label,value,strong=false}){return <div className={`resultRow ${strong?'strong':''}`}><span>{label}</span><b>{value}</b></div>}
 function Empty(){return <div className="empty">ยังไม่มีข้อมูล</div>}
 function strategyExpectancy(history,name){const a=history.filter(x=>x.setup===name);if(!a.length)return 'No sample yet';const e=a.reduce((s,x)=>s+Number(x.r||0),0)/a.length;return `Expectancy ${e>=0?'+':''}${e.toFixed(2)}R`;}
+
+const MANAGEMENT_MODELS = [
+  { key:'originalR', label:'Original SL/TP' },
+  { key:'be1R', label:'BE @ +1R' },
+  { key:'be15R', label:'BE @ +1.5R' },
+  { key:'structureR', label:'Structure Trail' },
+];
+
+function ManagementLab({ history, setHistory }) {
+  const [setupFilter, setSetupFilter] = useState('All');
+  const setups = ['All', ...new Set(history.map(t=>t.setup).filter(Boolean))];
+  const trades = setupFilter==='All' ? history : history.filter(t=>t.setup===setupFilter);
+  const completed = trades.filter(t => MANAGEMENT_MODELS.every(m => finite(t.management?.[m.key])) && finite(t.management?.mfe) && finite(t.management?.mae));
+  const stats = MANAGEMENT_MODELS.map(model => ({ ...model, ...managementStats(completed, model.key) }));
+  const leader = stats.filter(s=>s.count>0).sort((a,b)=>b.expectancy-a.expectancy)[0];
+
+  function update(id, key, value) {
+    setHistory(rows => rows.map(t => t.id===id ? {
+      ...t,
+      management: { ...t.management, [key]: value==='' ? '' : Number(value) }
+    } : t));
+  }
+
+  return <section className="labStack">
+    <div className="card labIntro">
+      <div className="cardHead"><h2>Trade Management Lab</h2><p>ใช้ Entry และ Original SL ชุดเดียวกัน แล้วเทียบผลลัพธ์ 4 วิธีจากกราฟจริง</p></div>
+      <div className="labToolbar">
+        <Field label="Strategy filter"><select value={setupFilter} onChange={e=>setSetupFilter(e.target.value)}>{setups.map(x=><option key={x}>{x}</option>)}</select></Field>
+        <div className="sampleStatus"><span>Valid sample</span><b>{completed.length} / {trades.length}</b><small>{completed.length<20?'ยังเป็นช่วงเก็บข้อมูล':completed.length<50?'เริ่มเห็น preliminary signal':'เริ่มใช้ประเมินระบบได้'}</small></div>
+        <div className="sampleStatus"><span>Current leader</span><b>{leader ? leader.label : 'Not enough data'}</b><small>{leader ? `${signedR(leader.expectancy)} expectancy` : 'กรอก trade ให้ครบทั้ง 4 model'}</small></div>
+      </div>
+    </div>
+
+    <div className="labMetrics">
+      {stats.map(s=><div className={`modelCard ${leader?.key===s.key?'leader':''}`} key={s.key}>
+        <div className="modelTitle"><h3>{s.label}</h3>{leader?.key===s.key&&<span>BEST</span>}</div>
+        <strong>{s.count ? signedR(s.expectancy) : '—'}</strong><small>Expectancy</small>
+        <div className="modelGrid"><span>Profit Factor<b>{s.count ? fmtStat(s.profitFactor) : '—'}</b></span><span>Win rate<b>{s.count ? `${s.winRate.toFixed(1)}%` : '—'}</b></span><span>Max DD<b>{s.count ? `${s.maxDrawdown.toFixed(2)}R` : '—'}</b></span><span>MFE captured<b>{s.count ? `${s.capture.toFixed(1)}%` : '—'}</b></span><span>Giveback<b>{s.count ? `${s.giveback.toFixed(2)}R` : '—'}</b></span><span>BE rate<b>{s.count ? `${s.beRate.toFixed(1)}%` : '—'}</b></span></div>
+      </div>)}
+    </div>
+
+    <div className="card">
+      <div className="cardHead"><h2>Simulation records</h2><p>กรอกเป็นหน่วย R จากการ replay กราฟ: กำไรเป็นบวก ขาดทุนเป็นลบ และ BE = 0</p></div>
+      {trades.length===0 ? <Empty/> : <div className="tableWrap"><table className="labTable"><thead><tr><th>Trade</th><th>Actual</th><th>MFE</th><th>MAE</th>{MANAGEMENT_MODELS.map(m=><th key={m.key}>{m.label}</th>)}<th>Cost</th></tr></thead><tbody>{trades.map(t=>{
+        const m=t.management||{};
+        const values=MANAGEMENT_MODELS.map(x=>Number(m[x.key])).filter(Number.isFinite);
+        const cost=values.length===4 ? Math.max(...values)-Number(t.r||0) : null;
+        return <tr key={t.id}>
+          <td><b>{t.symbol}</b><small>{new Date(t.closedAt).toLocaleDateString()} · {t.setup}</small></td>
+          <td className={Number(t.r)>=0?'goodText':'badText'}>{signedR(t.r)}</td>
+          <td><LabInput value={m.mfe} onChange={v=>update(t.id,'mfe',v)} positive /></td>
+          <td><LabInput value={m.mae} onChange={v=>update(t.id,'mae',v)} /></td>
+          {MANAGEMENT_MODELS.map(model=><td key={model.key}><LabInput value={m[model.key]} onChange={v=>update(t.id,model.key,v)} /></td>)}
+          <td>{cost===null?'—':signedR(cost)}</td>
+        </tr>})}</tbody></table></div>}
+      <div className="labNote"><b>Structure rule:</b> หลังราคาแตะ +1R ให้รอ HL/LH ยืนยันและ break swing ก่อนเลื่อน SL ใต้/เหนือ structure ล่าสุด ผลลัพธ์ต้องมาจาก chart replay ไม่ใช่การคาดเดาจาก MFE อย่างเดียว</div>
+    </div>
+  </section>
+}
+
+function LabInput({value,onChange,positive=false}){
+  return <div className="rInput"><input type="number" step="0.1" min={positive?'0':undefined} value={value??''} onChange={e=>onChange(e.target.value)} placeholder="R"/><span>R</span></div>
+}
+function finite(v){return v!==''&&v!==null&&v!==undefined&&Number.isFinite(Number(v));}
+function signedR(v){const n=Number(v||0);return `${n>0?'+':''}${n.toFixed(2)}R`;}
+function fmtStat(v){return Number.isFinite(v)?v.toFixed(2):'∞';}
+function managementStats(trades,key){
+  const rows=trades.map(t=>({r:Number(t.management[key]),mfe:Number(t.management.mfe)}));
+  if(!rows.length)return {count:0,expectancy:0,profitFactor:0,winRate:0,maxDrawdown:0,capture:0,giveback:0,beRate:0};
+  const values=rows.map(x=>x.r);
+  const grossWin=values.filter(x=>x>0).reduce((a,b)=>a+b,0);
+  const grossLoss=Math.abs(values.filter(x=>x<0).reduce((a,b)=>a+b,0));
+  let peak=0,equity=0,maxDrawdown=0;
+  values.slice().reverse().forEach(r=>{equity+=r;peak=Math.max(peak,equity);maxDrawdown=Math.max(maxDrawdown,peak-equity)});
+  const eligible=rows.filter(x=>x.mfe>0);
+  const capture=eligible.length?eligible.reduce((s,x)=>s+(Math.max(0,x.r)/x.mfe)*100,0)/eligible.length:0;
+  const giveback=eligible.length?eligible.reduce((s,x)=>s+Math.max(0,x.mfe-x.r),0)/eligible.length:0;
+  return {count:rows.length,expectancy:values.reduce((a,b)=>a+b,0)/values.length,profitFactor:grossLoss?grossWin/grossLoss:Infinity,winRate:values.filter(x=>x>0).length/values.length*100,maxDrawdown,capture,giveback,beRate:values.filter(x=>x===0).length/values.length*100};
+}
