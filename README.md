@@ -21,6 +21,8 @@ A separate systematic-trading support app focused on decision quality, portfolio
 - Risk Added After Profit warning
 - Portfolio exposure table
 - 5-point execution score
+- Trade Management Lab comparing Original SL/TP, BE at +1R, BE at +1.5R, and Structure Trailing
+- Expectancy, Profit Factor, Win Rate, Max Drawdown, MFE Capture, Giveback, and Management Cost
 - Browser persistence with localStorage
 
 ## Data note
